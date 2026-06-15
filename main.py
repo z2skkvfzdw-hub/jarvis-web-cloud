@@ -260,6 +260,46 @@ def weak_image_result(item: dict[str, str]) -> bool:
     return any(word in text for word in blocked)
 
 
+def fallback_photo_gallery(query: str, existing: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+    existing = existing or []
+    stop = {
+        "show",
+        "find",
+        "image",
+        "images",
+        "picture",
+        "pictures",
+        "photo",
+        "photos",
+        "ideas",
+        "idea",
+        "inspiration",
+        "design",
+        "for",
+        "of",
+        "the",
+        "a",
+        "an",
+    }
+    words = [word for word in re.findall(r"[a-zA-Z0-9]+", query.lower()) if word not in stop]
+    tags = ",".join(words[:4] or ["technology"])
+    photos = list(existing)
+    for index in range(1, 13):
+        url = f"https://loremflickr.com/900/650/{tags}?lock={index}"
+        photos.append(
+            {
+                "thumbnail": url,
+                "image": url,
+                "url": url,
+                "title": f"{query} idea {index}",
+                "source": "loremflickr.com",
+            }
+        )
+        if len(photos) >= 12:
+            break
+    return photos[:12]
+
+
 def ddgs_image_search(query: str) -> str:
     if DDGS is None:
         return "Image search is not available because the ddgs package is missing."
@@ -284,6 +324,8 @@ def ddgs_image_search(query: str) -> str:
                 )
                 if len(images) >= 12:
                     break
+        if len(images) < 6:
+            images = fallback_photo_gallery(query, images)
         if not images:
             return "No image results found."
         return f"Here are image ideas for {query}.\n\n" + image_gallery_payload(query, images)
