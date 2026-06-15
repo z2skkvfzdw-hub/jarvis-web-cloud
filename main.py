@@ -220,13 +220,56 @@ def image_gallery_payload(query: str, images: list[dict[str, str]]) -> str:
     return f"[[JARVIS_IMAGE_GALLERY:{token}]]"
 
 
+def improve_image_query(query: str) -> str:
+    cleaned = clean_text(query).strip(" .?")
+    lowered = cleaned.lower()
+    design_words = (
+        "table",
+        "chair",
+        "room",
+        "bedroom",
+        "kitchen",
+        "lounge",
+        "sofa",
+        "desk",
+        "furniture",
+        "interior",
+        "decor",
+        "outfit",
+        "style",
+        "haircut",
+    )
+    if any(word in lowered for word in design_words):
+        return f"{cleaned} interior design inspiration photo"
+    if "logo" in lowered or "icon" in lowered:
+        return f"{cleaned} design examples"
+    return f"{cleaned} photo"
+
+
+def weak_image_result(item: dict[str, str]) -> bool:
+    text = clean_text(" ".join(str(item.get(key, "")) for key in ("title", "url", "source"))).lower()
+    blocked = (
+        "etymology",
+        "word study",
+        "vocabulary",
+        "x.com",
+        "twitter.com",
+        "meme",
+        "unrelated",
+    )
+    return any(word in text for word in blocked)
+
+
 def ddgs_image_search(query: str) -> str:
     if DDGS is None:
         return "Image search is not available because the ddgs package is missing."
     try:
         images: list[dict[str, str]] = []
+        improved_query = improve_image_query(query)
         with DDGS() as ddgs:
-            for item in ddgs.images(query, region="wt-wt", safesearch="moderate", max_results=12):
+            for item in ddgs.images(improved_query, region="wt-wt", safesearch="moderate", max_results=20):
+                if weak_image_result(item):
+                    continue
                 thumb = str(item.get("thumbnail") or item.get("image") or "")
                 if not thumb.startswith(("http://", "https://")):
                     continue
@@ -239,6 +282,8 @@ def ddgs_image_search(query: str) -> str:
                         "source": str(item.get("source") or ""),
                     }
                 )
+                if len(images) >= 12:
+                    break
         if not images:
             return "No image results found."
         return f"Here are image ideas for {query}.\n\n" + image_gallery_payload(query, images)
