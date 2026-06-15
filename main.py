@@ -190,7 +190,8 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
         data = response.json()
         return clean_text(data["choices"][0]["message"]["content"])
     except Exception as exc:
-        return f"Cloud brain error: {exc}"
+        print(f"[cloud brain warning] {exc}")
+        return None
 
 
 def ddgs_text_search(query: str) -> str:
@@ -255,6 +256,62 @@ def wants_image_search(text: str) -> str | None:
     return None
 
 
+def factual_or_instruction_request(text: str) -> bool:
+    lowered = text.lower().strip()
+    starters = (
+        "who ",
+        "who's ",
+        "whos ",
+        "what ",
+        "what's ",
+        "whats ",
+        "when ",
+        "where ",
+        "why ",
+        "how ",
+        "explain ",
+        "tell me about ",
+        "summarise ",
+        "summarize ",
+        "define ",
+        "meaning of ",
+    )
+    return lowered.endswith("?") or lowered.startswith(starters)
+
+
+def fallback_conversation(text: str, history: list[dict[str, str]]) -> str:
+    lowered = text.lower().strip()
+    last_answer = ""
+    for item in reversed(history):
+        if item.get("role") == "Jarvis":
+            last_answer = clean_text(item.get("content", ""))
+            break
+
+    if lowered in {"hello", "hi", "hey", "yo", "sup", "what up", "whats up", "what's up", "hey what up"}:
+        return "Hey. What would you like to talk about?"
+
+    if lowered in {"thanks", "thank you", "cheers"}:
+        return "No problem. What do you want to do next?"
+
+    if ("summarise" in lowered or "summarize" in lowered) and last_answer:
+        summary = re.split(r"(?<=[.!?])\s+", last_answer)
+        return "Summary: " + " ".join(summary[:3]).strip()
+
+    if re.search(r"\b(step|part|point)\s+\d+\b", lowered) and last_answer:
+        return (
+            "I can continue from the previous answer. "
+            "The cloud model is unavailable, so paste the exact line you want expanded and I will work from that."
+        )
+
+    if factual_or_instruction_request(text):
+        results = ddgs_text_search(text)
+        if "No search results found" not in results and "Search failed" not in results:
+            return results
+        return "I need debugging: I understood the request, but search did not return enough usable information."
+
+    return "I need debugging: I understood the message, but the cloud language model did not return a useful response."
+
+
 def jarvis_reply(user_text: str, chat_id: str) -> str:
     text = clean_text(user_text)
     lowered = text.lower()
@@ -292,12 +349,7 @@ def jarvis_reply(user_text: str, chat_id: str) -> str:
     if reply:
         return reply
 
-    if lowered.endswith("?"):
-        return (
-            "The cloud brain is not configured yet. Add a GROQ_API_KEY or OPENROUTER_API_KEY to the hosting service, "
-            "then I can answer properly from the cloud."
-        )
-    return "I am online. The cloud brain needs an API key before deeper conversation works."
+    return fallback_conversation(text, history)
 
 
 def render_content(content: str) -> str:
