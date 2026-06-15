@@ -1,0 +1,6 @@
+ddgs
+fastapi
+pydantic
+python-multipart
+requests
+uvicorn
