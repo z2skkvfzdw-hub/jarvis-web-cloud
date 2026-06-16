@@ -27,7 +27,7 @@ DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = os.environ.get("JARVIS_CLOUD_PROVIDER", "groq").strip().lower()
-DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "deepseek-r1-distill-llama-70b")
+DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "llama-3.3-70b-versatile")
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 
 app = FastAPI(title=APP_TITLE, version="1.0")

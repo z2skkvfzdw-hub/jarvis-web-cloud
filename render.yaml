@@ -9,6 +9,6 @@ services:
       - key: JARVIS_CLOUD_PROVIDER
         value: groq
       - key: JARVIS_CLOUD_MODEL
-        value: deepseek-r1-distill-llama-70b
+        value: llama-3.3-70b-versatile
       - key: GROQ_API_KEY
         sync: false
