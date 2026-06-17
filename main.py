@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 try:
@@ -23,6 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.web"
+APP_VERSION = "1.1.0"
+CACHE_VERSION = "jarvis-web-1-1-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -30,7 +32,20 @@ DEFAULT_PROVIDER = os.environ.get("JARVIS_CLOUD_PROVIDER", "groq").strip().lower
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "llama-3.3-70b-versatile")
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 
-app = FastAPI(title=APP_TITLE, version="1.0")
+app = FastAPI(title=APP_TITLE, version=APP_VERSION)
+
+
+@app.middleware("http")
+async def add_web_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=()")
+    if request.url.path == "/sw.js":
+        response.headers["Cache-Control"] = "no-cache"
+    elif request.url.path in {"/manifest.json", "/icon.svg", "/offline"}:
+        response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 class ChatRequest(BaseModel):
@@ -520,6 +535,11 @@ def page_html(chat_id: str, device_id: str) -> str:
 <head>
     <title>{APP_TITLE}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Jarvis">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <style>
         * {{ box-sizing: border-box; }}
         body {{
@@ -773,7 +793,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             <section class="composer">
                 <form class="chat-form" id="chat-form">
                     <textarea id="message-input" name="message" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
-                    <button class="send-button" id="send-button" type="submit">↑</button>
+                    <button class="send-button" id="send-button" type="submit">&uarr;</button>
                 </form>
                 {suggestions}
                 <div class="hint">Cloud Jarvis works without the owner's computer. Local device controls require desktop Jarvis.</div>
@@ -878,15 +898,176 @@ def page_html(chat_id: str, device_id: str) -> str:
                 sendMessage();
             }}
         }});
+        if ("serviceWorker" in navigator) {{
+            navigator.serviceWorker.register("/sw.js").catch(() => {{}});
+        }}
         scrollDown();
     </script>
 </body>
 </html>"""
 
 
+@app.get("/manifest.json")
+def manifest() -> JSONResponse:
+    return JSONResponse(
+        {
+            "name": APP_TITLE,
+            "short_name": "Jarvis",
+            "description": "Cloud-safe Jarvis assistant.",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#000000",
+            "theme_color": "#000000",
+            "icons": [
+                {
+                    "src": "/icon.svg",
+                    "sizes": "any",
+                    "type": "image/svg+xml",
+                    "purpose": "any maskable",
+                }
+            ],
+        }
+    )
+
+
+@app.get("/icon.svg")
+def icon_svg() -> Response:
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<rect width="256" height="256" rx="56" fill="#050505"/>
+<rect x="42" y="42" width="172" height="172" rx="40" fill="#121212" stroke="#3a3a3a" stroke-width="8"/>
+<path d="M92 76h72v24h-24v80h-28v-80H92z" fill="#f5f5f5"/>
+<circle cx="196" cy="60" r="11" fill="#22c55e"/>
+</svg>"""
+    return Response(svg, media_type="image/svg+xml")
+
+
+@app.get("/offline", response_class=HTMLResponse)
+def offline_page() -> HTMLResponse:
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+    <title>{APP_TITLE} offline</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
+    <style>
+        body {{
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #000;
+            color: #f2f2f2;
+            font-family: "Segoe UI", Arial, sans-serif;
+        }}
+        main {{
+            width: min(560px, calc(100vw - 32px));
+            padding: 32px;
+            border: 1px solid #2c2c2c;
+            border-radius: 22px;
+            background: #101010;
+        }}
+        h1 {{ margin: 0 0 12px; font-size: 28px; font-weight: 500; }}
+        p {{ margin: 0 0 20px; color: #cfcfcf; line-height: 1.6; }}
+        a {{
+            display: inline-flex;
+            min-height: 42px;
+            align-items: center;
+            padding: 0 16px;
+            border-radius: 999px;
+            color: #000;
+            background: #f2f2f2;
+            text-decoration: none;
+            font-weight: 600;
+        }}
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Jarvis.web is offline.</h1>
+        <p>The app shell loaded, but the cloud server is not reachable from this network right now. Reconnect and try again.</p>
+        <a href="/">Try again</a>
+    </main>
+</body>
+</html>"""
+    )
+
+
+@app.get("/sw.js")
+def service_worker() -> Response:
+    script = """const CACHE_NAME = "__CACHE_VERSION__";
+const SHELL_ASSETS = ["/offline", "/manifest.json", "/icon.svg"];
+
+self.addEventListener("install", event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(SHELL_ASSETS))
+      .then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener("activate", event => {
+  event.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener("fetch", event => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (request.method !== "GET" || url.origin !== self.location.origin) return;
+
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request).catch(() => caches.match("/offline")));
+    return;
+  }
+
+  event.respondWith(
+    caches.match(request).then(cached => {
+      if (cached) return cached;
+      return fetch(request).then(response => {
+        if (response.ok && SHELL_ASSETS.includes(url.pathname)) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+        }
+        return response;
+      });
+    })
+  );
+});""".replace("__CACHE_VERSION__", CACHE_VERSION)
+    return Response(script, media_type="application/javascript")
+
+
+@app.get("/robots.txt")
+def robots_txt() -> Response:
+    return Response("User-agent: *\nAllow: /\n", media_type="text/plain")
+
+
+def status_payload() -> dict[str, Any]:
+    return {
+        "status": "online",
+        "app": APP_TITLE,
+        "version": APP_VERSION,
+        "time": now_stamp(),
+        "provider": DEFAULT_PROVIDER,
+        "model": DEFAULT_MODEL,
+        "cloud_brain_configured": bool(cloud_key(DEFAULT_PROVIDER)),
+        "device_control": False,
+        "network_mode": "cloud-safe",
+    }
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "online", "app": APP_TITLE, "time": now_stamp()}
+def health() -> dict[str, Any]:
+    return status_payload()
+
+
+@app.get("/status")
+def status() -> JSONResponse:
+    return JSONResponse(status_payload())
 
 
 @app.get("/", response_class=HTMLResponse)
