@@ -7,8 +7,8 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: JARVIS_CLOUD_PROVIDER
-        value: groq
-      - key: JARVIS_CLOUD_MODEL
-        value: llama-3.3-70b-versatile
+        value: auto
+      - key: JARVIS_GROQ_MODEL
+        value: openai/gpt-oss-120b
       - key: GROQ_API_KEY
         sync: false

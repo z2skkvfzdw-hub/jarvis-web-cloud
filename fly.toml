@@ -6,8 +6,8 @@ primary_region = "syd"
 
 [env]
   PORT = "8080"
-  JARVIS_CLOUD_PROVIDER = "groq"
-  JARVIS_CLOUD_MODEL = "llama-3.3-70b-versatile"
+  JARVIS_CLOUD_PROVIDER = "auto"
+  JARVIS_GROQ_MODEL = "openai/gpt-oss-120b"
 
 [http_service]
   internal_port = 8080

@@ -22,14 +22,14 @@ except Exception:
     DDGS = None
 
 
-APP_TITLE = "Jarvis.web"
-APP_VERSION = "1.1.0"
-CACHE_VERSION = "jarvis-web-1-1-0"
+APP_TITLE = "Jarvis.AI"
+APP_VERSION = "1.2.0"
+CACHE_VERSION = "jarvis-ai-1-2-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
-DEFAULT_PROVIDER = os.environ.get("JARVIS_CLOUD_PROVIDER", "groq").strip().lower()
-DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "llama-3.3-70b-versatile")
+DEFAULT_PROVIDER = os.environ.get("JARVIS_CLOUD_PROVIDER", "auto").strip().lower()
+DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
@@ -137,16 +137,28 @@ def list_chats(device_id: str) -> list[tuple[str, str]]:
 
 
 def cloud_key(provider: str) -> str:
+    if provider == "openai":
+        return os.environ.get("OPENAI_API_KEY", "") or os.environ.get("JARVIS_OPENAI_API_KEY", "")
     if provider == "openrouter":
         return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
     return os.environ.get("GROQ_API_KEY", "") or os.environ.get("JARVIS_GROQ_API_KEY", "")
 
 
+def available_cloud_providers() -> list[str]:
+    order = [DEFAULT_PROVIDER] if DEFAULT_PROVIDER in {"openai", "openrouter", "groq"} else []
+    order.extend(["openai", "openrouter", "groq"])
+    return [provider for provider in dict.fromkeys(order) if cloud_key(provider)]
+
+
+def provider_model(provider: str) -> str:
+    specific_env = {"openai": "JARVIS_OPENAI_MODEL", "openrouter": "JARVIS_OPENROUTER_MODEL", "groq": "JARVIS_GROQ_MODEL"}
+    defaults = {"openai": "gpt-5.4-mini", "openrouter": "openrouter/auto", "groq": "openai/gpt-oss-120b"}
+    return os.environ.get(specific_env[provider], "").strip() or DEFAULT_MODEL or defaults[provider]
+
+
 def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> str | None:
-    provider = DEFAULT_PROVIDER
-    model = DEFAULT_MODEL
-    key = cloud_key(provider)
-    if not key:
+    providers = available_cloud_providers()
+    if not providers:
         return None
 
     messages: list[dict[str, str]] = [
@@ -156,10 +168,12 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
                 "You are Jarvis.web, a public cloud version of Jarvis. "
                 "You are not running on the owner's laptop, so you cannot open local apps, read local files, "
                 "control Windows, use local Ollama, or access private owner memory. "
-                "You can chat, explain, tutor, brainstorm, summarize, write, help with coding concepts, "
-                "and use web search results when they are provided. "
-                "Sound calm, intelligent, direct, and natural. Do not pretend to have device control. "
-                "If the user asks for a local-device action, explain that the desktop Jarvis must be running."
+                "You can reason, plan, explain, tutor, brainstorm, summarize, write, review code, analyse designs, "
+                "and use web search results when provided. Read the complete conversation and infer reasonable intent. "
+                "Begin with the useful answer, recommendation, or next action. For complex work, privately check assumptions, "
+                "constraints, alternatives, risks, and test criteria, then present only the conclusion and useful reasoning. "
+                "Never reveal chain-of-thought. Sound calm, intelligent, candid, and natural. Avoid canned acknowledgements "
+                "and unnecessary follow-up questions. Do not pretend to have device control."
             ),
         }
     ]
@@ -171,42 +185,55 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
                 messages.append({"role": role, "content": content[:2500]})
     messages.append({"role": "user", "content": prompt})
 
-    try:
-        if provider == "openrouter":
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": os.environ.get("JARVIS_OPENROUTER_REFERER", "https://jarvis.web"),
-                    "X-OpenRouter-Title": APP_TITLE,
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.55,
-                    "max_tokens": 900,
-                },
-                timeout=35,
-            )
-        else:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.55,
-                    "max_tokens": 900,
-                },
-                timeout=35,
-            )
-        response.raise_for_status()
-        data = response.json()
-        return clean_text(data["choices"][0]["message"]["content"])
-    except Exception as exc:
-        print(f"[cloud brain warning] {exc}")
-        return None
+    for provider in providers:
+        model = provider_model(provider)
+        key = cloud_key(provider)
+        try:
+            if provider == "openrouter":
+                response = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": os.environ.get("JARVIS_OPENROUTER_REFERER", "https://jarvis.web"),
+                        "X-OpenRouter-Title": APP_TITLE,
+                    },
+                    json={"model": model, "messages": messages, "temperature": 0.5, "max_tokens": 1200},
+                    timeout=35,
+                )
+            elif provider == "openai":
+                response = requests.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"model": model, "input": messages, "max_output_tokens": 1200},
+                    timeout=35,
+                )
+            else:
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": messages, "temperature": 0.5, "max_tokens": 1200},
+                    timeout=35,
+                )
+            response.raise_for_status()
+            data = response.json()
+            if provider == "openai":
+                answer = clean_text(data.get("output_text", ""))
+                if not answer:
+                    answer = clean_text("".join(
+                        str(content.get("text", ""))
+                        for item in data.get("output", [])
+                        for content in item.get("content", [])
+                        if content.get("type") in {"output_text", "text"}
+                    ))
+            else:
+                answer = clean_text(data["choices"][0]["message"]["content"])
+            if answer:
+                return answer
+        except Exception as exc:
+            print(f"[cloud brain warning] {provider}: {exc}")
+            continue
+    return None
 
 
 def ddgs_text_search(query: str) -> str:
@@ -519,14 +546,16 @@ def page_html(chat_id: str, device_id: str) -> str:
     if not load_chat(chat_id):
         empty_state = """
         <div class="empty-state" id="empty-state">
-            <h1>How can I help?</h1>
+            <div class="system-kicker"><span></span> JARVIS CLOUD READY</div>
+            <h1>What are we building?</h1>
+            <p>Reason, research, plan, and develop ideas from any device.</p>
         </div>
         """
     suggestions = "" if load_chat(chat_id) else """
     <div class="suggestions" id="composer-suggestions">
-        <button class="suggestion" type="button">Create an image</button>
-        <button class="suggestion" type="button">Write or edit</button>
-        <button class="suggestion" type="button">Look something up</button>
+        <button class="suggestion" data-prompt="Help me design a prototype. Start with the goal, constraints, architecture, risks, and first build step." type="button">Prototype</button>
+        <button class="suggestion" data-prompt="Analyse my idea, challenge the assumptions, and recommend the best approach." type="button">Analyse</button>
+        <button class="suggestion" data-prompt="Search for current information about " type="button">Research</button>
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
@@ -763,6 +792,49 @@ def page_html(chat_id: str, device_id: str) -> str:
             .suggestions {{ overflow-x: auto; justify-content: flex-start; padding-bottom: 4px; }}
             .suggestion {{ white-space: nowrap; min-width: max-content; }}
         }}
+        :root {{ --bg:#050708; --line:#1c2a2e; --text:#edf7f7; --muted:#8a9a9d; --accent:#43e6e3; --signal:#98df72; --warning:#e8b85f; }}
+        body, .app, .main, .composer {{ background:var(--bg); }}
+        .sidebar {{ width:268px; background:#06090a; border-color:var(--line); }}
+        .brand-mark {{ background:#0b191b; border-color:#2b7074; color:var(--accent); }}
+        .nav-primary {{ background:#102123; color:var(--accent); border:1px solid #1d4144; }}
+        .nav-item:hover, .chat-row:hover {{ background:#0d1517; }}
+        .chat-row.active {{ background:#112024; }}
+        .topbar {{ height:58px; justify-content:space-between; border-bottom:1px solid #10191b; }}
+        .topbar-title {{ color:#c7d6d8; font:11px/1 Consolas, monospace; }}
+        .mode {{ background:#0b1416; color:var(--accent); border-color:#214247; border-radius:6px; font-family:Consolas,monospace; text-transform:uppercase; }}
+        .empty-state {{ flex-direction:column; align-items:flex-start; justify-content:flex-end; text-align:left; }}
+        .system-kicker {{ display:flex; align-items:center; gap:9px; color:var(--accent); font:11px/1.2 Consolas,monospace; margin-bottom:14px; }}
+        .system-kicker span {{ width:7px; height:7px; border-radius:50%; background:var(--signal); box-shadow:0 0 12px rgba(152,223,114,.7); }}
+        .empty-state h1 {{ font-size:34px; font-weight:520; }}
+        .empty-state p {{ margin:10px 0 0; color:var(--muted); font-size:15px; }}
+        .message.user .bubble {{ background:#152124; border:1px solid #26383c; border-radius:8px; }}
+        .chat-form {{ min-height:66px; border-radius:8px; background:#0c1214; border-color:#223236; }}
+        .chat-form:focus-within {{ border-color:#2d696d; }}
+        .chat-form::before {{ color:var(--accent); font-size:23px; }}
+        .send-button {{ width:42px; height:42px; border-radius:6px; background:var(--accent); }}
+        .suggestion {{ min-height:42px; padding:0 16px; border-radius:6px; background:#090d0f; border-color:#213438; color:#d6e4e5; }}
+        .workspace-panel {{ width:320px; flex:0 0 320px; display:flex; flex-direction:column; background:#070b0c; border-left:1px solid var(--line); }}
+        .workspace-header {{ height:74px; padding:0 18px; display:flex; align-items:center; border-bottom:1px solid var(--line); }}
+        .workspace-header span, .workspace-section > span {{ color:var(--accent); font:10px/1.2 Consolas,monospace; text-transform:uppercase; }}
+        .workspace-header h2 {{ margin:6px 0 0; font-size:16px; }}
+        .core-section {{ padding:14px; border-bottom:1px solid var(--line); }}
+        #jarvis-core {{ display:block; width:100%; aspect-ratio:16/9; background:#030607; border:1px solid #142326; }}
+        .core-readout {{ display:flex; gap:8px; align-items:center; padding:9px 3px 0; color:var(--muted); font:10px/1 Consolas,monospace; }}
+        .core-readout strong {{ margin-left:auto; color:#d6e5e6; }}
+        .status-light {{ width:6px; height:6px; border-radius:50%; background:var(--signal); box-shadow:0 0 10px rgba(152,223,114,.65); }}
+        .status-light.busy {{ background:var(--warning); }}
+        .workspace-section {{ padding:18px; border-bottom:1px solid var(--line); }}
+        .workspace-section h3 {{ margin:8px 0 6px; font-size:14px; }}
+        .workspace-section p {{ margin:0; color:var(--muted); font-size:12px; line-height:1.5; }}
+        .telemetry {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
+        .telemetry span {{ display:block; color:#708084; font-size:10px; }}
+        .telemetry strong {{ display:block; margin-top:4px; font-size:11px; overflow-wrap:anywhere; }}
+        @media (max-width:1180px) {{ .workspace-panel {{ display:none; }} }}
+        @media (max-width:760px) {{
+            .topbar-title {{ font-size:10px; }} .empty-state p {{ font-size:13px; }}
+            .suggestions {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; overflow:visible; }}
+            .suggestion {{ min-width:0; width:100%; padding:0 7px; font-size:12px; }}
+        }}
     </style>
 </head>
 <body>
@@ -783,7 +855,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             {sidebar}
         </aside>
         <main class="main">
-            <header class="topbar"><div class="mode">Cloud Safe</div></header>
+            <header class="topbar"><div class="topbar-title">JARVIS / CLOUD CORE</div><div class="mode">Secure cloud</div></header>
             <section class="chat" id="chat">
                 <div class="chat-inner" id="messages">
                     {empty_state}
@@ -799,6 +871,12 @@ def page_html(chat_id: str, device_id: str) -> str:
                 <div class="hint">Cloud Jarvis works without the owner's computer. Local device controls require desktop Jarvis.</div>
             </section>
         </main>
+        <aside class="workspace-panel" aria-label="Prototype workspace">
+            <header class="workspace-header"><div><span>Prototype workspace</span><h2>Build with Jarvis</h2></div></header>
+            <section class="core-section"><canvas id="jarvis-core" width="640" height="360" aria-label="Animated Jarvis reasoning core"></canvas><div class="core-readout"><span class="status-light" id="status-light"></span><span id="core-state">READY</span><strong id="latency-readout">--</strong></div></section>
+            <section class="workspace-section"><span>Purpose</span><h3>From idea to working prototype</h3><p>Use chat to define requirements, compare designs, plan tests, and work through failures.</p></section>
+            <section class="workspace-section telemetry"><div><span>Brain</span><strong>{html.escape(provider_model(available_cloud_providers()[0])) if available_cloud_providers() else 'Not configured'}</strong></div><div><span>Runtime</span><strong>Independent cloud</strong></div><div><span>Context</span><strong>Per device</strong></div><div><span>Search</span><strong>Available</strong></div></section>
+        </aside>
     </div>
     <script>
         const chatId = {json.dumps(chat_id)};
@@ -809,8 +887,35 @@ def page_html(chat_id: str, device_id: str) -> str:
         const button = document.getElementById("send-button");
         const emptyState = document.getElementById("empty-state");
         const suggestions = document.getElementById("composer-suggestions");
+        const coreState = document.getElementById("core-state");
+        const statusLight = document.getElementById("status-light");
+        const latencyReadout = document.getElementById("latency-readout");
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
+        function setCoreState(label, busy = false) {{
+            if (coreState) coreState.textContent = label;
+            if (statusLight) statusLight.classList.toggle("busy", busy);
+        }}
+        function startCoreVisual() {{
+            const canvas = document.getElementById("jarvis-core");
+            if (!canvas) return;
+            const context = canvas.getContext("2d");
+            const points = Array.from({{length:150}}, (_,index) => ({{
+                angle:(index/150)*Math.PI*2, radius:.2+((index*37)%72)/100,
+                size:.5+((index*19)%16)/10, speed:.00006+((index*11)%7)*.000008
+            }}));
+            function draw(timestamp) {{
+                const rect=canvas.getBoundingClientRect(); const ratio=Math.min(window.devicePixelRatio||1,2);
+                const width=Math.max(1,Math.round(rect.width*ratio)), height=Math.max(1,Math.round(rect.height*ratio));
+                if(canvas.width!==width||canvas.height!==height){{canvas.width=width;canvas.height=height;}}
+                context.clearRect(0,0,width,height); const cx=width/2,cy=height/2,scale=Math.min(width,height)*.35;
+                context.lineWidth=ratio;
+                for(let ring=1;ring<=3;ring+=1){{context.beginPath();context.arc(cx,cy,scale*(.32+ring*.22),0,Math.PI*2);context.strokeStyle=`rgba(67,230,227,${{.12-ring*.02}})`;context.stroke();}}
+                for(const point of points){{const angle=point.angle+timestamp*point.speed;const px=cx+Math.cos(angle)*scale*point.radius;const py=cy+Math.sin(angle)*scale*point.radius*.72;context.beginPath();context.arc(px,py,point.size*ratio,0,Math.PI*2);context.fillStyle="rgba(67,230,227,.72)";context.fill();}}
+                requestAnimationFrame(draw);
+            }}
+            requestAnimationFrame(draw);
+        }}
         function escapeHtml(value) {{
             return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
         }}
@@ -861,10 +966,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         document.querySelectorAll(".suggestion").forEach(item => {{
             item.addEventListener("click", () => {{
-                const text = item.textContent.trim();
-                if (text === "Create an image") input.value = "image: futuristic assistant interface";
-                else if (text === "Write or edit") input.value = "Write a clear paragraph about my idea";
-                else if (text === "Look something up") input.value = "search: latest science news";
+                input.value = item.dataset.prompt || item.textContent.trim();
                 input.focus();
             }});
         }});
@@ -874,7 +976,10 @@ def page_html(chat_id: str, device_id: str) -> str:
             addMessage("user", text);
             input.value = "";
             button.disabled = true;
-            const placeholder = addMessage("Jarvis", "Analysing.");
+            const placeholder = addMessage("Jarvis", "Analysing");
+            let thinkingStep=0;
+            const thinkingTimer=window.setInterval(()=>{{thinkingStep=(thinkingStep+1)%4;placeholder.querySelector(".bubble").textContent="Analysing"+".".repeat(thinkingStep);}},350);
+            setCoreState("ANALYSING", true);
             try {{
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
@@ -883,10 +988,13 @@ def page_html(chat_id: str, device_id: str) -> str:
                 }});
                 const data = await response.json();
                 placeholder.querySelector(".bubble").innerHTML = renderContent(data.answer || "No response.");
+                if(data.elapsed_ms&&latencyReadout) latencyReadout.textContent=`${{(data.elapsed_ms/1000).toFixed(1)}}s`;
             }} catch (error) {{
                 placeholder.querySelector(".bubble").textContent = "Connection error. Jarvis.web did not respond.";
             }} finally {{
+                window.clearInterval(thinkingTimer);
                 button.disabled = false;
+                setCoreState("READY", false);
                 input.focus();
                 scrollDown();
             }}
@@ -901,6 +1009,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         if ("serviceWorker" in navigator) {{
             navigator.serviceWorker.register("/sw.js").catch(() => {{}});
         }}
+        startCoreVisual();
         scrollDown();
     </script>
 </body>
@@ -1047,14 +1156,16 @@ def robots_txt() -> Response:
 
 
 def status_payload() -> dict[str, Any]:
+    providers = available_cloud_providers()
+    selected = providers[0] if providers else DEFAULT_PROVIDER
     return {
         "status": "online",
         "app": APP_TITLE,
         "version": APP_VERSION,
         "time": now_stamp(),
-        "provider": DEFAULT_PROVIDER,
-        "model": DEFAULT_MODEL,
-        "cloud_brain_configured": bool(cloud_key(DEFAULT_PROVIDER)),
+        "provider": selected,
+        "model": provider_model(selected) if selected in {"openai", "openrouter", "groq"} else "not configured",
+        "cloud_brain_configured": bool(providers),
         "device_control": False,
         "network_mode": "cloud-safe",
     }
@@ -1109,11 +1220,12 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
 
     text = clean_text(payload.message)
     messages = load_chat(chat_id)
+    started = time.perf_counter()
     answer = jarvis_reply(text, chat_id)
     messages.append({"role": "user", "content": text, "time": now_stamp()})
     messages.append({"role": "Jarvis", "content": answer, "time": now_stamp()})
     save_chat(chat_id, messages)
-    return JSONResponse({"answer": answer})
+    return JSONResponse({"answer": answer, "elapsed_ms": round((time.perf_counter() - started) * 1000)})
 
 
 if __name__ == "__main__":
