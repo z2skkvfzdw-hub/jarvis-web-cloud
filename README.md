@@ -1,4 +1,4 @@
-# Jarvis.web Cloud Deploy
+# Jarvis.AI Cloud Deploy
 
 This folder is the clean cloud-hosted version of Jarvis.
 
@@ -28,13 +28,13 @@ Environment variables:
 
 ```text
 GROQ_API_KEY=your_key_here
-JARVIS_CLOUD_PROVIDER=groq
-JARVIS_CLOUD_MODEL=llama-3.3-70b-versatile
+JARVIS_CLOUD_PROVIDER=auto
+JARVIS_GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 ## Network Support
 
-Jarvis.web now includes:
+Jarvis.AI now includes:
 
 - Installable web app manifest
 - App icon

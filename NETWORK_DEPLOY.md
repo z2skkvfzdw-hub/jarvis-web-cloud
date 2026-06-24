@@ -1,6 +1,6 @@
-# Jarvis.web Network Setup
+# Jarvis.AI Network Setup
 
-Jarvis.web can run from any normal network that allows HTTPS web traffic.
+Jarvis.AI can run from any normal network that allows HTTPS web traffic.
 
 It cannot force its way through school, work, country, or parent network blocks. If a network blocks Render, Groq, or your custom domain, the correct fix is to use an allowed host/domain or ask the network owner to whitelist it.
 
@@ -13,7 +13,7 @@ It cannot force its way through school, work, country, or parent network blocks.
 
 ## Health Checks
 
-Use these URLs to check whether Jarvis.web is online:
+Use these URLs to check whether Jarvis.AI is online:
 
 ```text
 https://jarvis-web-cloud.onrender.com/health
@@ -22,7 +22,7 @@ https://jarvis-web-cloud.onrender.com/status
 
 ## Phone And Tablet
 
-Open the Render URL in Safari or Chrome. Then use Add to Home Screen. Jarvis.web now includes a manifest, app icon, and offline shell, so it behaves more like a web app.
+Open the Render URL in Safari or Chrome. Then use Add to Home Screen. Jarvis.AI includes a manifest, app icon, and offline shell, so it behaves more like a web app.
 
 ## Important Limits
 

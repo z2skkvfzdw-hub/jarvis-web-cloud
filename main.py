@@ -165,7 +165,7 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
         {
             "role": "system",
             "content": (
-                "You are Jarvis.web, a public cloud version of Jarvis. "
+                "You are Jarvis.AI, a public cloud version of Jarvis. "
                 "You are not running on the owner's laptop, so you cannot open local apps, read local files, "
                 "control Windows, use local Ollama, or access private owner memory. "
                 "You can reason, plan, explain, tutor, brainstorm, summarize, write, review code, analyse designs, "
@@ -990,7 +990,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                 placeholder.querySelector(".bubble").innerHTML = renderContent(data.answer || "No response.");
                 if(data.elapsed_ms&&latencyReadout) latencyReadout.textContent=`${{(data.elapsed_ms/1000).toFixed(1)}}s`;
             }} catch (error) {{
-                placeholder.querySelector(".bubble").textContent = "Connection error. Jarvis.web did not respond.";
+                placeholder.querySelector(".bubble").textContent = "Connection error. Jarvis.AI did not respond.";
             }} finally {{
                 window.clearInterval(thinkingTimer);
                 button.disabled = false;
@@ -1094,7 +1094,7 @@ def offline_page() -> HTMLResponse:
 </head>
 <body>
     <main>
-        <h1>Jarvis.web is offline.</h1>
+        <h1>Jarvis.AI is offline.</h1>
         <p>The app shell loaded, but the cloud server is not reachable from this network right now. Reconnect and try again.</p>
         <a href="/">Try again</a>
     </main>
