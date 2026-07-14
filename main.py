@@ -546,17 +546,58 @@ def page_html(chat_id: str, device_id: str) -> str:
     if not load_chat(chat_id):
         empty_state = """
         <div class="empty-state" id="empty-state">
+            <div class="system-kicker"><span></span> JARVIS SYSTEM READY</div>
             <h1>How can I help?</h1>
+            <p>Secure chat, study help, explanations, and safe web search.</p>
         </div>
         """
     suggestions = "" if load_chat(chat_id) else """
     <div class="suggestions" id="composer-suggestions">
-        <button class="suggestion" data-prompt="show me images of " type="button">Create an image</button>
-        <button class="suggestion" data-prompt="Help me write or edit this: " type="button">Write or edit</button>
-        <button class="suggestion" data-prompt="search: " type="button">Look something up</button>
+        <button class="suggestion" data-prompt="search: " type="button">Research</button>
+        <button class="suggestion" data-prompt="Help me write this: " type="button">Write</button>
+        <button class="suggestion" data-prompt="Give me ideas for " type="button">Ideas</button>
+        <button class="suggestion" data-prompt="Answer this: " type="button">Ask</button>
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
+    providers = available_cloud_providers()
+    brain_label = provider_model(providers[0]) if providers else "Not configured"
+    workspace_panel = f"""
+        <aside class="workspace-panel" aria-label="Prototype workspace">
+            <header class="workspace-header">
+                <div>
+                    <span class="eyebrow">Prototype workspace</span>
+                    <h2>Build with Jarvis</h2>
+                </div>
+                <span class="panel-badge">Cloud</span>
+            </header>
+            <div class="workspace-scroll">
+                <section class="core-section">
+                    <canvas id="jarvis-core" width="640" height="360" aria-label="Animated Jarvis reasoning core"></canvas>
+                    <div class="core-readout">
+                        <span class="status-light" id="status-light"></span>
+                        <span id="core-state">READY</span>
+                        <strong id="latency-readout">--</strong>
+                    </div>
+                </section>
+                <section class="workspace-section">
+                    <span class="eyebrow">Active context</span>
+                    <h3>No active project</h3>
+                    <p>Tell Jarvis what you want to build.</p>
+                </section>
+                <section class="workspace-section telemetry-grid">
+                    <div><span>Brain</span><strong>{html.escape(brain_label)}</strong></div>
+                    <div><span>Mode</span><strong>Adaptive</strong></div>
+                    <div><span>Context</span><strong>Per device</strong></div>
+                    <div><span>Tools</span><strong>Available</strong></div>
+                </section>
+                <section class="workspace-section">
+                    <span class="eyebrow">Projects</span>
+                    <p class="workspace-empty">No saved projects yet.</p>
+                </section>
+            </div>
+        </aside>
+    """
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -790,11 +831,146 @@ def page_html(chat_id: str, device_id: str) -> str:
             .suggestions {{ overflow-x: auto; justify-content: flex-start; padding-bottom: 4px; }}
             .suggestion {{ white-space: nowrap; min-width: max-content; }}
         }}
-        .topbar-title {{ display:none; }}
-        .mode {{ text-transform:none; }}
+        /* Jarvis.Ai prototype workspace shell */
+        :root {{
+            --bg: #050708;
+            --surface: #0b1012;
+            --surface-soft: #11191c;
+            --sidebar: #06090a;
+            --line: #1c2a2e;
+            --text: #edf7f7;
+            --muted: #8a9a9d;
+            --accent: #43e6e3;
+            --signal: #98df72;
+            --warning: #e8b85f;
+        }}
+        body, .app, .main, .composer {{ background: var(--bg); color: var(--text); }}
+        .app {{ isolation: isolate; }}
+        .sidebar {{ width: 268px; background: var(--sidebar); border-color: var(--line); padding: 18px 10px 96px; }}
+        .brand-mark {{ border-color: #2b7074; background: #0b191b; color: var(--accent); box-shadow: 0 0 18px rgba(67, 230, 227, 0.12); }}
+        .brand-name {{ color: #f4ffff; }}
+        .nav-primary {{ background: #102123; color: var(--accent); border: 1px solid #1d4144; }}
+        .nav-item:hover, .chat-row:hover {{ background: #0d1517; }}
+        .chat-row.active {{ background: #112024; }}
+        .main {{ min-width: 420px; }}
+        .topbar {{ height: 58px; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #10191b; background: var(--bg); }}
+        .topbar-title {{
+            display: block;
+            color: #c7d6d8;
+            font-family: Consolas, "Cascadia Code", monospace;
+            font-size: 12px;
+            text-transform: uppercase;
+        }}
+        .mode {{
+            background: #0b1416;
+            color: var(--accent);
+            border-color: #214247;
+            border-radius: 6px;
+            font-family: Consolas, "Cascadia Code", monospace;
+            text-transform: uppercase;
+        }}
+        .chat {{ padding: 8px 24px 12px; }}
+        .chat-inner {{ max-width: 900px; }}
+        .empty-state {{
+            min-height: calc(100vh - 300px);
+            align-items: flex-start;
+            justify-content: flex-end;
+            text-align: left;
+            padding: 0 8px 34px;
+        }}
+        .system-kicker {{
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            color: var(--accent);
+            font: 11px/1.2 Consolas, "Cascadia Code", monospace;
+            margin-bottom: 14px;
+        }}
+        .system-kicker span {{
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--signal);
+            box-shadow: 0 0 12px rgba(152, 223, 114, 0.7);
+        }}
+        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; }}
+        .empty-state p {{ display: block; max-width: 650px; margin: 10px 0 0; color: var(--muted); font-size: 15px; line-height: 1.55; }}
+        .message.jarvis .bubble {{ color: #e5f0f1; }}
+        .message.user .bubble {{ background: #152124; color: #f1f6f6; border: 1px solid #26383c; border-radius: 8px; }}
+        .chat-form {{
+            background: #0c1214;
+            border-color: #223236;
+            border-radius: 8px;
+            min-height: 66px;
+            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.24);
+        }}
+        .chat-form:focus-within {{ background: #0e1517; border-color: #2d696d; box-shadow: 0 0 0 1px rgba(67, 230, 227, 0.08); }}
+        .chat-form::before {{ content: "+"; color: var(--accent); font-size: 23px; }}
+        .send-button {{ width: 42px; height: 42px; border-radius: 6px; background: var(--accent); color: #031011; font-size: 0; }}
+        .send-button::before {{ content: "\\2191"; color: #031011; font-size: 23px; line-height: 1; }}
+        .suggestion {{
+            height: 42px;
+            min-height: 42px;
+            padding: 0 16px;
+            border-radius: 6px;
+            background: #090d0f;
+            border-color: #213438;
+            color: #d6e4e5;
+        }}
+        .suggestion:hover {{ background: #10191b; border-color: #2e6266; }}
+        .hint {{ color: #718084; }}
+        .workspace-panel {{
+            width: 332px;
+            flex: 0 0 332px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: #070b0c;
+            border-left: 1px solid var(--line);
+        }}
+        .workspace-header {{
+            height: 74px;
+            flex: 0 0 74px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 0 18px;
+            border-bottom: 1px solid var(--line);
+        }}
+        .workspace-header h2 {{ margin: 5px 0 0; font-size: 16px; font-weight: 600; color: #f2f7f7; }}
+        .eyebrow {{ color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
+        .panel-badge {{ border: 1px solid #263639; border-radius: 6px; background: #0b1113; color: #b7c8ca; padding: 8px 10px; font-size: 11px; }}
+        .workspace-scroll {{ overflow-y: auto; }}
+        .core-section {{ position: relative; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }}
+        #jarvis-core {{ display: block; width: 100%; aspect-ratio: 16 / 9; background: #030607; border: 1px solid #142326; }}
+        .core-readout {{ min-height: 30px; display: flex; align-items: center; gap: 8px; color: #8ea0a3; font: 10px/1 Consolas, "Cascadia Code", monospace; padding: 9px 3px 0; }}
+        .core-readout strong {{ margin-left: auto; color: #d6e5e6; font-weight: 500; }}
+        .status-light {{ width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px rgba(152, 223, 114, 0.65); }}
+        .status-light.busy {{ background: var(--warning); box-shadow: 0 0 10px rgba(232, 184, 95, 0.65); }}
+        .workspace-section {{ padding: 17px 18px; border-bottom: 1px solid var(--line); }}
+        .workspace-section h3 {{ margin: 8px 0 6px; color: #e8f2f2; font-size: 15px; font-weight: 600; line-height: 1.35; }}
+        .workspace-section p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }}
+        .telemetry-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }}
+        .telemetry-grid span {{ display: block; color: #708084; font-size: 10px; line-height: 1.35; }}
+        .telemetry-grid strong {{ display: block; margin-top: 4px; color: #d9e5e5; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }}
+        .workspace-empty {{ color: #718084; }}
+        @media (max-width: 1240px) {{
+            .workspace-panel {{ display: none; }}
+            .chat-inner, .chat-form, .suggestions, .hint {{ max-width: 820px; }}
+        }}
         @media (max-width:760px) {{
-            .suggestions {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; overflow:visible; }}
+            .main {{ min-width: 0; }}
+            .topbar {{ height: 52px; padding: 0 14px; }}
+            .topbar-title {{ font-size: 11px; }}
+            .mode {{ font-size: 10px; padding: 6px 8px; }}
+            .empty-state {{ min-height: calc(100vh - 250px); }}
+            .empty-state h1 {{ font-size: 28px; }}
+            .empty-state p {{ font-size: 13px; }}
+            .suggestions {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; overflow:visible; }}
             .suggestion {{ min-width:0; width:100%; padding:0 7px; font-size:12px; }}
+            .chat-form {{ min-height: 60px; padding-left: 10px; }}
+            .chat-form::before {{ display: none; }}
         }}
     </style>
 </head>
@@ -816,7 +992,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             {sidebar}
         </aside>
         <main class="main">
-            <header class="topbar"><div class="topbar-title">Jarvis.Ai</div><div class="mode">Secure &amp; Safe</div></header>
+            <header class="topbar"><div class="topbar-title">JARVIS / CONVERSATION CORE</div><div class="mode">Secure &amp; Safe</div></header>
             <section class="chat" id="chat">
                 <div class="chat-inner" id="messages">
                     {empty_state}
@@ -832,6 +1008,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                 <div class="hint">Cloud Jarvis works without the owner's computer. Local device controls require desktop Jarvis.</div>
             </section>
         </main>
+        {workspace_panel}
     </div>
     <script>
         const chatId = {json.dumps(chat_id)};
