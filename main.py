@@ -152,7 +152,7 @@ def available_cloud_providers() -> list[str]:
 
 def provider_model(provider: str) -> str:
     specific_env = {"openai": "JARVIS_OPENAI_MODEL", "openrouter": "JARVIS_OPENROUTER_MODEL", "groq": "JARVIS_GROQ_MODEL"}
-    defaults = {"openai": "gpt-5.4-mini", "openrouter": "openrouter/auto", "groq": "openai/gpt-oss-120b"}
+    defaults = {"openai": "gpt-5.4-mini", "openrouter": "tencent/hy3:free", "groq": "openai/gpt-oss-120b"}
     return os.environ.get(specific_env[provider], "").strip() or DEFAULT_MODEL or defaults[provider]
 
 
