@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.1"
-CACHE_VERSION = "jarvis-ai-1-2-1"
+APP_VERSION = "1.2.2"
+CACHE_VERSION = "jarvis-ai-1-2-2"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -890,9 +890,17 @@ def page_html(chat_id: str, device_id: str) -> str:
         .empty-state {{
             min-height: calc(100vh - 300px);
             align-items: flex-start;
-            justify-content: flex-end;
+            justify-content: center;
             text-align: left;
             padding: 0 8px 34px;
+        }}
+        .empty-state > div {{
+            width: min(760px, 100%);
+            display: grid;
+            grid-template-columns: minmax(190px, 0.9fr) minmax(240px, 1fr);
+            column-gap: 46px;
+            align-items: center;
+            margin: 0 auto;
         }}
         .system-kicker {{
             display: flex;
@@ -900,7 +908,9 @@ def page_html(chat_id: str, device_id: str) -> str:
             gap: 9px;
             color: var(--accent);
             font: 11px/1.2 Consolas, "Cascadia Code", monospace;
-            margin-bottom: 14px;
+            margin: 0;
+            align-self: start;
+            padding-top: 8px;
         }}
         .system-kicker span {{
             width: 7px;
@@ -909,8 +919,8 @@ def page_html(chat_id: str, device_id: str) -> str:
             background: var(--signal);
             box-shadow: 0 0 12px rgba(152, 223, 114, 0.7);
         }}
-        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; }}
-        .empty-state p {{ display: block; max-width: 650px; margin: 10px 0 0; color: var(--muted); font-size: 15px; line-height: 1.55; }}
+        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; grid-column: 1; margin-top: 26px; }}
+        .empty-state p {{ display: block; max-width: 360px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; grid-column: 2; grid-row: 1 / span 2; }}
         .message.jarvis .bubble {{ color: #e5f0f1; }}
         .message.user .bubble {{ background: #152124; color: #f1f6f6; border: 1px solid #26383c; border-radius: 8px; }}
         .chat-form {{
@@ -984,6 +994,16 @@ def page_html(chat_id: str, device_id: str) -> str:
             .workspace-panel {{ display: none; }}
             .workspace-open {{ display: none !important; }}
             .chat-inner, .chat-form, .composer-suggestions, .hint {{ max-width: 820px; }}
+        }}
+        @media (max-width: 980px) {{
+            .empty-state > div {{
+                max-width: 540px;
+                grid-template-columns: 1fr;
+                row-gap: 10px;
+                text-align: left;
+            }}
+            .empty-state h1 {{ grid-column: 1; margin-top: 0; }}
+            .empty-state p {{ grid-column: 1; grid-row: auto; max-width: 440px; margin-top: 2px; }}
         }}
         @media (max-width:760px) {{
             .main {{ min-width: 0; }}
