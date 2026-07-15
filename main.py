@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.3.1"
-CACHE_VERSION = "jarvis-ai-1-3-1"
+APP_VERSION = "1.4.0"
+CACHE_VERSION = "jarvis-ai-1-4-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -148,10 +148,29 @@ def provider_model(provider: str) -> str:
     return os.environ.get("JARVIS_OPENROUTER_MODEL", "").strip() or DEFAULT_MODEL or "tencent/hy3:free"
 
 
-def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> str | None:
+def cloud_generate(
+    prompt: str,
+    history: list[dict[str, str]] | None = None,
+    mode: str = "conversation",
+) -> str | None:
     providers = available_cloud_providers()
     if not providers:
         return None
+
+    specialist_prompt = ""
+    if mode == "engineering":
+        specialist_prompt = (
+            " You are now the Jarvis Engineering Agent. Treat the conversation as one continuing physical-design "
+            "project. Translate the user's intent into an achievable mechanical concept. Work in metric units. "
+            "Separate known facts from assumptions. Never invent dimensions, loads, clearances, or completed CAD. "
+            "If essential information is missing, ask no more than three precise measurement questions and explain "
+            "what each controls. Once enough information is available, provide: design objective, constraints, chosen "
+            "concept and why, critical dimensions and tolerances, materials and hardware, CAD construction sequence, "
+            "prototype steps, failure risks, and validation checks. For helmets, wearables, structural parts, batteries, "
+            "motors, or moving mechanisms, preserve protective function and call out safety-critical tests. End with one "
+            "clear next action. Do not claim that a part was fabricated, scanned, simulated, or tested unless the user "
+            "provided the result."
+        )
 
     messages: list[dict[str, str]] = [
         {
@@ -166,6 +185,7 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
                 "constraints, alternatives, risks, and test criteria, then present only the conclusion and useful reasoning. "
                 "Never reveal chain-of-thought. Sound calm, intelligent, candid, and natural. Avoid canned acknowledgements "
                 "and unnecessary follow-up questions. Do not pretend to have device control."
+                + specialist_prompt
             ),
         }
     ]
@@ -408,6 +428,108 @@ def fallback_conversation(text: str, history: list[dict[str, str]]) -> str:
     return "I need debugging: I understood the message, but the cloud language model did not return a useful response."
 
 
+def engineering_context(text: str, history: list[dict[str, str]]) -> bool:
+    lowered = clean_text(text).lower()
+    if re.match(r"^(engineer|engineering|cad|design\s+(?:a|an|the)?\s*part|prototype)\s*:", lowered):
+        return True
+
+    physical_terms = (
+        "mount",
+        "bracket",
+        "adapter",
+        "holder",
+        "enclosure",
+        "housing",
+        "hinge",
+        "joint",
+        "gear",
+        "linkage",
+        "chassis",
+        "frame",
+        "fixture",
+        "clamp",
+        "mechanism",
+        "robot arm",
+        "helmet",
+        "wearable",
+        "3d print",
+        "3-d print",
+        "openscad",
+        "solidworks",
+        "fusion 360",
+    )
+    design_actions = (
+        "design",
+        "engineer",
+        "model",
+        "prototype",
+        "fabricate",
+        "build",
+        "make",
+        "fit",
+        "attach",
+        "calculate",
+        "recommend",
+        "compare",
+    )
+    has_part = any(term in lowered for term in physical_terms)
+    has_action = any(re.search(rf"\b{re.escape(action)}\b", lowered) for action in design_actions)
+    if has_part and (has_action or len(lowered.split()) >= 4):
+        return True
+
+    recent = " ".join(
+        clean_text(item.get("content", "")).lower()
+        for item in history[-8:]
+        if item.get("role") in {"user", "Jarvis"}
+    )
+    project_is_active = any(term in recent for term in physical_terms) and any(
+        phrase in recent
+        for phrase in ("design objective", "critical dimensions", "cad", "prototype", "engineering")
+    )
+    if not project_is_active:
+        return False
+
+    follow_up_signals = (
+        "dimension",
+        "measurement",
+        "material",
+        "load",
+        "weight",
+        "clearance",
+        "thickness",
+        "tolerance",
+        "hole",
+        "screw",
+        "bolt",
+        "print",
+        "strong",
+        "safe",
+        "next",
+        "that",
+        "it",
+    )
+    return len(lowered.split()) <= 24 or any(signal in lowered for signal in follow_up_signals)
+
+
+def engineering_fallback(text: str) -> str:
+    subject = re.sub(
+        r"^(?:engineer|engineering|cad|prototype|design(?:\s+(?:a|an|the))?)\s*:\s*",
+        "",
+        clean_text(text),
+        flags=re.IGNORECASE,
+    ).strip()
+    subject = subject or "the part"
+    return (
+        f"Engineering project opened for: {subject}.\n\n"
+        "Before I can produce a defensible CAD-ready design, I need the three measurements that control the fit: "
+        "the available mounting area, the attachment-point spacing, and the maximum load or object weight. Include "
+        "a photo or describe any surfaces that must not be drilled, heated, or permanently altered.\n\n"
+        "Once those are known, I can turn them into a concept, material and fastener choice, tolerances, a CAD build "
+        "sequence, prototype checks, and failure tests. The cloud engineering model is unavailable right now, so I "
+        "will not invent the missing geometry."
+    )
+
+
 def jarvis_reply(user_text: str, chat_id: str) -> str:
     text = clean_text(user_text)
     lowered = text.lower()
@@ -440,6 +562,10 @@ def jarvis_reply(user_text: str, chat_id: str) -> str:
             "That needs desktop Jarvis running on the owner's computer. "
             "This cloud version can chat, search, tutor, and brainstorm, but it cannot control a laptop that is off."
         )
+
+    if engineering_context(text, history):
+        reply = cloud_generate(text, history, mode="engineering")
+        return reply or engineering_fallback(text)
 
     reply = cloud_generate(text, history)
     if reply:
@@ -550,11 +676,11 @@ def page_html(chat_id: str, device_id: str) -> str:
             </section>
             <section class="launch-grid" aria-label="Quick launch prompts">
                 <button data-prompt="Build a modern web page for " type="button"><span>Build</span><strong>Website</strong></button>
+                <button data-prompt="Engineer a physical part for " type="button"><span>Engineer</span><strong>Hardware</strong></button>
                 <button data-prompt="Research and summarise " type="button"><span>Research</span><strong>Brief</strong></button>
                 <button data-prompt="Create study notes for " type="button"><span>Study</span><strong>Lesson</strong></button>
                 <button data-prompt="Show image ideas for " type="button"><span>Visual</span><strong>Ideas</strong></button>
                 <button data-prompt="Plan this project: " type="button"><span>Plan</span><strong>Project</strong></button>
-                <button data-prompt="Explain this simply: " type="button"><span>Explain</span><strong>Concept</strong></button>
             </section>
         </div>
         """
@@ -562,6 +688,7 @@ def page_html(chat_id: str, device_id: str) -> str:
     <div class="suggestions composer-suggestions" id="composer-suggestions">
         <button class="suggestion" data-prompt="Find " type="button"><span data-lucide="search"></span>Find</button>
         <button class="suggestion" data-prompt="Think through " type="button"><span data-lucide="brain-circuit"></span>Think</button>
+        <button class="suggestion" data-prompt="Engineer a physical part for " type="button"><span data-lucide="ruler"></span>Engineer</button>
         <button class="suggestion" data-prompt="Show visual ideas for " type="button"><span data-lucide="image"></span>Visuals</button>
         <button class="suggestion" data-prompt="Help me study " type="button"><span data-lucide="book-open"></span>Study</button>
     </div>
@@ -589,6 +716,19 @@ def page_html(chat_id: str, device_id: str) -> str:
                         <strong id="latency-readout">--</strong>
                     </div>
                 </section>
+                <section class="workspace-section engineering-card">
+                    <div class="section-heading"><span class="eyebrow">Engineering agent</span><span id="engineering-status">READY</span></div>
+                    <canvas id="engineering-preview" width="560" height="260" aria-label="Parametric mount engineering preview"></canvas>
+                    <h3 id="engineering-project">Awaiting a physical design</h3>
+                    <p id="engineering-next">Describe the part, what it attaches to, and what it must carry. Jarvis will ask for only the measurements that control the design.</p>
+                    <div class="workspace-actions engineering-actions">
+                        <button data-prompt="Engineer a mount for " type="button">Design a mount</button>
+                        <button data-prompt="Check the loads and failure risks for " type="button">Check loads</button>
+                        <button data-prompt="Create a prototype and test plan for " type="button">Prototype plan</button>
+                        <button data-prompt="Turn this project into a CAD-ready design brief: " type="button">CAD-ready brief</button>
+                        <button id="engineering-export" type="button" disabled>Export latest brief</button>
+                    </div>
+                </section>
                 <section class="workspace-section earnings-card">
                     <div class="section-heading"><span class="eyebrow">AI time ledger</span><span data-activity-metric="live">IDLE</span></div>
                     <strong class="credit-amount" data-activity-metric="credits">0.00 JC</strong>
@@ -612,13 +752,14 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <div><span>Tools</span><strong>Available</strong></div>
                 </section>
                 <section class="workspace-section">
-                    <div class="section-heading"><span class="eyebrow">Prompt systems</span><span aria-hidden="true">06</span></div>
-                    <p class="workspace-empty">Build, research, write, study, visualise, and explain.</p>
+                    <div class="section-heading"><span class="eyebrow">Prompt systems</span><span aria-hidden="true">07</span></div>
+                    <p class="workspace-empty">Build, engineer, research, write, study, visualise, and explain.</p>
                 </section>
                 <section class="workspace-section">
                     <span class="eyebrow">Launch sequence</span>
                     <div class="workspace-actions">
                         <button data-prompt="Build a web page for " type="button">Build interface</button>
+                        <button data-prompt="Engineer a physical part for " type="button">Engineer hardware</button>
                         <button data-prompt="Create a research brief about " type="button">Research brief</button>
                         <button data-prompt="Make a study plan for " type="button">Study plan</button>
                         <button data-prompt="Generate visual ideas for " type="button">Visual ideas</button>
@@ -1179,6 +1320,30 @@ def page_html(chat_id: str, device_id: str) -> str:
         .status-light {{ width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px rgba(152, 223, 114, 0.65); }}
         .status-light.busy {{ background: var(--warning); box-shadow: 0 0 10px rgba(232, 184, 95, 0.65); }}
         .workspace-section {{ padding: 17px 18px; border-bottom: 1px solid var(--line); }}
+        .engineering-card {{
+            background:
+                linear-gradient(rgba(69, 240, 255, 0.035) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(69, 240, 255, 0.035) 1px, transparent 1px),
+                linear-gradient(180deg, rgba(5, 21, 31, 0.96), rgba(3, 10, 16, 0.98));
+            background-size: 18px 18px, 18px 18px, auto;
+        }}
+        .engineering-card .section-heading span:last-child {{
+            color: var(--signal);
+            font: 10px/1.2 Consolas, "Cascadia Code", monospace;
+        }}
+        #engineering-preview {{
+            display: block;
+            width: 100%;
+            aspect-ratio: 14 / 6.5;
+            margin: 12px 0 10px;
+            border: 1px solid rgba(37, 97, 143, 0.78);
+            border-radius: 7px;
+            background: rgba(1, 8, 14, 0.82);
+        }}
+        .engineering-actions {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .engineering-actions button {{ min-width: 0; justify-content: center; text-align: center; }}
+        #engineering-export {{ grid-column: 1 / -1; color: var(--accent); border-color: #276780; }}
+        #engineering-export:disabled {{ color: #52656a; border-color: #1d3033; cursor: not-allowed; opacity: 0.7; }}
         .earnings-card {{
             background:
                 radial-gradient(circle at 88% 12%, rgba(152, 255, 114, 0.12), transparent 32%),
@@ -1415,7 +1580,13 @@ def page_html(chat_id: str, device_id: str) -> str:
         const statusLight = document.getElementById("status-light");
         const latencyReadout = document.getElementById("latency-readout");
         const activityKey = "jarvis_web_activity_v1";
+        const engineeringKey = `jarvis_engineering_${{chatId}}`;
+        const engineeringStatus = document.getElementById("engineering-status");
+        const engineeringProject = document.getElementById("engineering-project");
+        const engineeringNext = document.getElementById("engineering-next");
+        const engineeringExport = document.getElementById("engineering-export");
         let activityState = loadActivityState();
+        let engineeringState = loadEngineeringState();
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
         function setCoreState(label, busy = false) {{
@@ -1474,6 +1645,72 @@ def page_html(chat_id: str, device_id: str) -> str:
             activityState.history = activityState.history.slice(-10);
             saveActivityState();
             updateActivityDashboard("CREDITED");
+        }}
+        function loadEngineeringState() {{
+            try {{
+                const saved = JSON.parse(localStorage.getItem(engineeringKey) || "{{}}");
+                return {{
+                    active: Boolean(saved.active),
+                    title: String(saved.title || ""),
+                    latestBrief: String(saved.latestBrief || "")
+                }};
+            }} catch (error) {{
+                return {{ active: false, title: "", latestBrief: "" }};
+            }}
+        }}
+        function saveEngineeringState() {{
+            try {{ localStorage.setItem(engineeringKey, JSON.stringify(engineeringState)); }} catch (error) {{}}
+        }}
+        function engineeringIntent(value) {{
+            const lowered = String(value || "").toLowerCase();
+            const parts = ["mount", "bracket", "adapter", "holder", "enclosure", "housing", "hinge", "joint", "gear", "linkage", "chassis", "fixture", "clamp", "mechanism", "robot arm", "helmet", "wearable", "3d print", "openscad", "solidworks", "fusion 360"];
+            const actions = ["design", "engineer", "model", "prototype", "fabricate", "build", "make", "fit", "attach", "calculate"];
+            if (/^(engineer|engineering|cad|prototype)\s*:/.test(lowered)) return true;
+            return parts.some(part => lowered.includes(part)) && (actions.some(action => lowered.includes(action)) || lowered.split(/\s+/).length >= 4);
+        }}
+        function updateEngineeringDashboard(stateLabel) {{
+            const active = engineeringState.active;
+            if (engineeringStatus) engineeringStatus.textContent = stateLabel || (active ? "PROJECT ACTIVE" : "READY");
+            if (engineeringProject) engineeringProject.textContent = active ? engineeringState.title : "Awaiting a physical design";
+            if (engineeringNext) engineeringNext.textContent = active
+                ? "Jarvis is retaining this design context. Add measurements, constraints, photos, material limits, or ask for the next engineering decision."
+                : "Describe the part, what it attaches to, and what it must carry. Jarvis will ask for only the measurements that control the design.";
+            if (engineeringExport) engineeringExport.disabled = !engineeringState.latestBrief;
+        }}
+        function activateEngineeringProject(text) {{
+            const cleaned = String(text || "").replace(/^(engineer|engineering|cad|prototype)\s*:\s*/i, "").trim();
+            engineeringState.active = true;
+            engineeringState.title = (cleaned || "Physical design project").slice(0, 78);
+            saveEngineeringState();
+            updateEngineeringDashboard("DESIGNING");
+        }}
+        function startEngineeringPreview() {{
+            const canvas = document.getElementById("engineering-preview");
+            if (!canvas) return;
+            const context = canvas.getContext("2d");
+            function draw(timestamp) {{
+                const rect = canvas.getBoundingClientRect();
+                const ratio = Math.min(window.devicePixelRatio || 1, 2);
+                const width = Math.max(1, Math.round(rect.width * ratio));
+                const height = Math.max(1, Math.round(rect.height * ratio));
+                if (canvas.width !== width || canvas.height !== height) {{ canvas.width = width; canvas.height = height; }}
+                context.clearRect(0, 0, width, height);
+                const cyan = "rgba(69,240,255,.82)";
+                const dim = "rgba(69,240,255,.25)";
+                const signal = "rgba(156,255,114,.82)";
+                context.lineWidth = ratio;
+                for (let x = 0; x < width; x += 24 * ratio) {{ context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.strokeStyle = "rgba(69,240,255,.045)"; context.stroke(); }}
+                for (let y = 0; y < height; y += 24 * ratio) {{ context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.strokeStyle = "rgba(69,240,255,.045)"; context.stroke(); }}
+                const left = width * .18, top = height * .24, partWidth = width * .64, partHeight = height * .5;
+                context.strokeStyle = cyan; context.lineWidth = 1.4 * ratio; context.strokeRect(left, top, partWidth, partHeight);
+                context.beginPath(); context.moveTo(left + partWidth * .35, top); context.lineTo(left + partWidth * .35, top + partHeight); context.moveTo(left + partWidth * .65, top); context.lineTo(left + partWidth * .65, top + partHeight); context.stroke();
+                for (const x of [left + partWidth * .16, left + partWidth * .84]) {{ context.beginPath(); context.arc(x, top + partHeight * .5, partHeight * .13, 0, Math.PI * 2); context.strokeStyle = signal; context.stroke(); }}
+                context.setLineDash([5 * ratio, 4 * ratio]); context.strokeStyle = dim; context.beginPath(); context.moveTo(left, top - 11 * ratio); context.lineTo(left + partWidth, top - 11 * ratio); context.stroke(); context.setLineDash([]);
+                context.fillStyle = "rgba(202,235,240,.72)"; context.font = `${{9 * ratio}}px Consolas`; context.fillText("PARAMETRIC MOUNT / MEASUREMENTS REQUIRED", left, height - 10 * ratio);
+                const sweep = (timestamp * .08 * ratio) % width; context.fillStyle = "rgba(69,240,255,.12)"; context.fillRect(sweep, 0, 2 * ratio, height);
+                requestAnimationFrame(draw);
+            }}
+            requestAnimationFrame(draw);
         }}
         function startCoreVisual() {{
             const canvas = document.getElementById("jarvis-core");
@@ -1561,12 +1798,26 @@ def page_html(chat_id: str, device_id: str) -> str:
                 input.focus();
             }});
         }});
+        if (engineeringExport) engineeringExport.addEventListener("click", () => {{
+            if (!engineeringState.latestBrief) return;
+            const content = `# Jarvis Engineering Brief\n\nProject: ${{engineeringState.title}}\n\n${{engineeringState.latestBrief}}\n`;
+            const url = URL.createObjectURL(new Blob([content], {{ type: "text/markdown;charset=utf-8" }}));
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "jarvis-engineering-brief.md";
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }});
         if (workspaceClose) workspaceClose.addEventListener("click", () => document.body.classList.add("workspace-collapsed"));
         if (workspaceOpen) workspaceOpen.addEventListener("click", () => document.body.classList.remove("workspace-collapsed"));
         if (window.lucide) lucide.createIcons();
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
+            const directEngineeringRequest = engineeringIntent(text);
+            const engineeringRun = directEngineeringRequest || engineeringState.active;
+            if (directEngineeringRequest) activateEngineeringProject(text);
+            else if (engineeringRun) updateEngineeringDashboard("ANALYSING");
             const startedAt = Date.now();
             addMessage("user", text);
             input.value = "";
@@ -1583,7 +1834,13 @@ def page_html(chat_id: str, device_id: str) -> str:
                     body: JSON.stringify({{ message: text }})
                 }});
                 const data = await response.json();
-                placeholder.querySelector(".bubble").innerHTML = renderContent(data.answer || "No response.");
+                const answerText = data.answer || "No response.";
+                placeholder.querySelector(".bubble").innerHTML = renderContent(answerText);
+                if (engineeringRun) {{
+                    engineeringState.latestBrief = answerText;
+                    saveEngineeringState();
+                    updateEngineeringDashboard("BRIEF READY");
+                }}
                 const elapsedMs = Number(data.elapsed_ms) || (Date.now() - startedAt);
                 if(elapsedMs&&latencyReadout) latencyReadout.textContent=`${{(elapsedMs/1000).toFixed(1)}}s`;
                 recordActivityRun(elapsedMs);
@@ -1610,6 +1867,8 @@ def page_html(chat_id: str, device_id: str) -> str:
             navigator.serviceWorker.register("/sw.js").catch(() => {{}});
         }}
         updateActivityDashboard();
+        updateEngineeringDashboard();
+        startEngineeringPreview();
         startCoreVisual();
         scrollDown();
     </script>
