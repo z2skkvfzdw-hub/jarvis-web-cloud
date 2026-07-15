@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.4.0"
-CACHE_VERSION = "jarvis-ai-1-4-0"
+APP_VERSION = "1.4.1"
+CACHE_VERSION = "jarvis-ai-1-4-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -513,11 +513,12 @@ def engineering_context(text: str, history: list[dict[str, str]]) -> bool:
 
 def engineering_fallback(text: str) -> str:
     subject = re.sub(
-        r"^(?:engineer|engineering|cad|prototype|design(?:\s+(?:a|an|the))?)\s*:\s*",
+        r"^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:engineer|engineering|cad|prototype|design|build|make)"
+        r"(?:\s+(?:a|an|the))?\s*:?[ ]*",
         "",
         clean_text(text),
         flags=re.IGNORECASE,
-    ).strip()
+    ).strip(" .")
     subject = subject or "the part"
     return (
         f"Engineering project opened for: {subject}.\n\n"
