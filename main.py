@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.0"
-CACHE_VERSION = "jarvis-ai-1-2-0"
+APP_VERSION = "1.2.1"
+CACHE_VERSION = "jarvis-ai-1-2-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -536,7 +536,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <span class="eyebrow">Prototype workspace</span>
                     <h2>Build with Jarvis</h2>
                 </div>
-                <span class="panel-badge">Cloud</span>
+                <span class="panel-icon" aria-hidden="true">&rsaquo;</span>
             </header>
             <div class="workspace-scroll">
                 <section class="core-section">
@@ -555,12 +555,21 @@ def page_html(chat_id: str, device_id: str) -> str:
                 <section class="workspace-section telemetry-grid">
                     <div><span>Brain</span><strong>{html.escape(brain_label)}</strong></div>
                     <div><span>Mode</span><strong>Adaptive</strong></div>
-                    <div><span>Context</span><strong>Per device</strong></div>
+                    <div><span>Context</span><strong>Per chat</strong></div>
                     <div><span>Tools</span><strong>Available</strong></div>
                 </section>
                 <section class="workspace-section">
-                    <span class="eyebrow">Projects</span>
+                    <div class="section-heading"><span class="eyebrow">Projects</span><span aria-hidden="true">[]</span></div>
                     <p class="workspace-empty">No saved projects yet.</p>
+                </section>
+                <section class="workspace-section">
+                    <span class="eyebrow">Start a task</span>
+                    <div class="workspace-actions">
+                        <button data-prompt="Help me plan " type="button">Plan a project</button>
+                        <button data-prompt="Summarise this: " type="button">Summarise text</button>
+                        <button data-prompt="Give me study questions for " type="button">Study drill</button>
+                        <button data-prompt="Look up " type="button">Research topic</button>
+                    </div>
                 </section>
             </div>
         </aside>
@@ -593,14 +602,21 @@ def page_html(chat_id: str, device_id: str) -> str:
             padding: 18px 10px;
             overflow-y: auto;
         }}
+        .brand-shell {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 0 8px;
+            min-height: 42px;
+        }}
         .brand-row {{
             display: flex;
             align-items: center;
             gap: 10px;
             color: #fff;
             text-decoration: none;
-            padding: 0 8px;
-            min-height: 42px;
+            min-width: 0;
         }}
         .brand-mark {{
             width: 28px;
@@ -614,6 +630,18 @@ def page_html(chat_id: str, device_id: str) -> str:
             font-weight: 700;
         }}
         .brand-name {{ font-size: 18px; font-weight: 650; }}
+        .brand-menu {{
+            width: 28px;
+            height: 28px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: #9aa7aa;
+            font-size: 20px;
+        }}
         .nav {{ display: grid; gap: 4px; margin: 26px 0 28px; }}
         .nav-item {{
             height: 44px;
@@ -625,6 +653,13 @@ def page_html(chat_id: str, device_id: str) -> str:
             color: #ececec;
             text-decoration: none;
             font-size: 15px;
+        }}
+        .nav-icon {{
+            width: 24px;
+            display: inline-flex;
+            justify-content: center;
+            color: inherit;
+            font-family: "Segoe UI Symbol", "Segoe UI", sans-serif;
         }}
         .nav-primary, .nav-item:hover, .chat-row:hover {{ background: #2f2f2f; }}
         .recents-header {{
@@ -907,7 +942,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         .workspace-header h2 {{ margin: 5px 0 0; font-size: 16px; font-weight: 600; color: #f2f7f7; }}
         .eyebrow {{ color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
-        .panel-badge {{ border: 1px solid #263639; border-radius: 6px; background: #0b1113; color: #b7c8ca; padding: 8px 10px; font-size: 11px; }}
+        .panel-icon {{ width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #263639; border-radius: 6px; background: #0b1113; color: #b7c8ca; font-size: 22px; }}
         .workspace-scroll {{ overflow-y: auto; }}
         .core-section {{ position: relative; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }}
         #jarvis-core {{ display: block; width: 100%; aspect-ratio: 16 / 9; background: #030607; border: 1px solid #142326; }}
@@ -921,7 +956,12 @@ def page_html(chat_id: str, device_id: str) -> str:
         .telemetry-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }}
         .telemetry-grid span {{ display: block; color: #708084; font-size: 10px; line-height: 1.35; }}
         .telemetry-grid strong {{ display: block; margin-top: 4px; color: #d9e5e5; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }}
+        .section-heading {{ display: flex; justify-content: space-between; align-items: center; }}
+        .section-heading span[aria-hidden="true"] {{ color: #71898c; font: 13px/1 Consolas, "Cascadia Code", monospace; }}
         .workspace-empty {{ color: #718084; }}
+        .workspace-actions {{ display: grid; gap: 7px; margin-top: 10px; }}
+        .workspace-actions button {{ min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 1px solid #1d3033; border-radius: 6px; background: #0a1012; color: #d4e0e1; font-size: 12px; text-align: left; cursor: pointer; }}
+        .workspace-actions button:hover {{ border-color: #2e686c; color: #fff; }}
         @media (max-width: 1240px) {{
             .workspace-panel {{ display: none; }}
             .chat-inner, .chat-form, .suggestions, .hint {{ max-width: 820px; }}
@@ -944,16 +984,19 @@ def page_html(chat_id: str, device_id: str) -> str:
 <body>
     <div class="app">
         <aside class="sidebar">
-            <a class="brand-row" href="/">
-                <span class="brand-mark">J</span>
-                <span class="brand-name">{APP_TITLE}</span>
-            </a>
+            <div class="brand-shell">
+                <a class="brand-row" href="/">
+                    <span class="brand-mark">J</span>
+                    <span class="brand-name">{APP_TITLE}</span>
+                </a>
+                <span class="brand-menu" aria-hidden="true">&#8230;</span>
+            </div>
             <nav class="nav">
-                <a class="nav-item nav-primary" href="/new"><span>New chat</span></a>
-                <a class="nav-item" href="/"><span>Search chats</span></a>
-                <a class="nav-item" href="/"><span>Library</span></a>
-                <a class="nav-item" href="/"><span>Projects</span></a>
-                <a class="nav-item" href="/"><span>Apps</span></a>
+                <a class="nav-item nav-primary" href="/new"><span class="nav-icon">+</span><span>New chat</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">?</span><span>Search chats</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">#</span><span>Library</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">[]</span><span>Projects</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">::</span><span>Apps</span></a>
             </nav>
             <div class="recents-header">Recents</div>
             {sidebar}
@@ -1064,6 +1107,12 @@ def page_html(chat_id: str, device_id: str) -> str:
             return article;
         }}
         document.querySelectorAll(".suggestion").forEach(item => {{
+            item.addEventListener("click", () => {{
+                input.value = item.dataset.prompt || item.textContent.trim();
+                input.focus();
+            }});
+        }});
+        document.querySelectorAll(".workspace-actions button[data-prompt]").forEach(item => {{
             item.addEventListener("click", () => {{
                 input.value = item.dataset.prompt || item.textContent.trim();
                 input.focus();
