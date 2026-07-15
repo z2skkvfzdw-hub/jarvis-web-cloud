@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.2"
-CACHE_VERSION = "jarvis-ai-1-2-2"
+APP_VERSION = "1.2.3"
+CACHE_VERSION = "jarvis-ai-1-2-3"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -889,18 +889,16 @@ def page_html(chat_id: str, device_id: str) -> str:
         .chat-inner {{ max-width: 900px; }}
         .empty-state {{
             min-height: calc(100vh - 300px);
+            width: min(700px, 100%);
+            display: grid;
+            grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1fr);
+            column-gap: 40px;
             align-items: flex-start;
+            align-content: start;
             justify-content: center;
             text-align: left;
-            padding: 0 8px 34px;
-        }}
-        .empty-state > div {{
-            width: min(760px, 100%);
-            display: grid;
-            grid-template-columns: minmax(190px, 0.9fr) minmax(240px, 1fr);
-            column-gap: 46px;
-            align-items: center;
             margin: 0 auto;
+            padding: 0 8px 34px;
         }}
         .system-kicker {{
             display: flex;
@@ -996,7 +994,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             .chat-inner, .chat-form, .composer-suggestions, .hint {{ max-width: 820px; }}
         }}
         @media (max-width: 980px) {{
-            .empty-state > div {{
+            .empty-state {{
                 max-width: 540px;
                 grid-template-columns: 1fr;
                 row-gap: 10px;
