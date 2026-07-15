@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.3"
-CACHE_VERSION = "jarvis-ai-1-2-3"
+APP_VERSION = "1.2.4"
+CACHE_VERSION = "jarvis-ai-1-2-4"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -889,16 +889,12 @@ def page_html(chat_id: str, device_id: str) -> str:
         .chat-inner {{ max-width: 900px; }}
         .empty-state {{
             min-height: calc(100vh - 300px);
-            width: min(700px, 100%);
-            display: grid;
-            grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1fr);
-            column-gap: 40px;
-            align-items: flex-start;
-            align-content: start;
+            width: min(650px, 100%);
+            display: block;
             justify-content: center;
             text-align: left;
             margin: 0 auto;
-            padding: 0 8px 34px;
+            padding: 12px 8px 34px;
         }}
         .system-kicker {{
             display: flex;
@@ -906,9 +902,8 @@ def page_html(chat_id: str, device_id: str) -> str:
             gap: 9px;
             color: var(--accent);
             font: 11px/1.2 Consolas, "Cascadia Code", monospace;
-            margin: 0;
-            align-self: start;
-            padding-top: 8px;
+            margin: 0 0 18px;
+            padding-top: 0;
         }}
         .system-kicker span {{
             width: 7px;
@@ -917,8 +912,8 @@ def page_html(chat_id: str, device_id: str) -> str:
             background: var(--signal);
             box-shadow: 0 0 12px rgba(152, 223, 114, 0.7);
         }}
-        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; grid-column: 1; margin-top: 26px; }}
-        .empty-state p {{ display: block; max-width: 360px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; grid-column: 2; grid-row: 1 / span 2; }}
+        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; margin: 0 0 10px; }}
+        .empty-state p {{ display: block; max-width: 610px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; }}
         .message.jarvis .bubble {{ color: #e5f0f1; }}
         .message.user .bubble {{ background: #152124; color: #f1f6f6; border: 1px solid #26383c; border-radius: 8px; }}
         .chat-form {{
@@ -996,12 +991,9 @@ def page_html(chat_id: str, device_id: str) -> str:
         @media (max-width: 980px) {{
             .empty-state {{
                 max-width: 540px;
-                grid-template-columns: 1fr;
-                row-gap: 10px;
                 text-align: left;
             }}
-            .empty-state h1 {{ grid-column: 1; margin-top: 0; }}
-            .empty-state p {{ grid-column: 1; grid-row: auto; max-width: 440px; margin-top: 2px; }}
+            .empty-state p {{ max-width: 440px; }}
         }}
         @media (max-width:760px) {{
             .main {{ min-width: 0; }}
