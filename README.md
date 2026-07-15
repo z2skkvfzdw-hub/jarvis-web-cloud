@@ -27,9 +27,8 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 Environment variables:
 
 ```text
-GROQ_API_KEY=your_key_here
-JARVIS_CLOUD_PROVIDER=auto
-JARVIS_GROQ_MODEL=openai/gpt-oss-120b
+OPENROUTER_API_KEY=your_key_here
+JARVIS_OPENROUTER_MODEL=tencent/hy3:free
 ```
 
 ## Network Support

@@ -28,7 +28,7 @@ CACHE_VERSION = "jarvis-ai-1-2-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
-DEFAULT_PROVIDER = os.environ.get("JARVIS_CLOUD_PROVIDER", "auto").strip().lower()
+DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 
@@ -137,23 +137,15 @@ def list_chats(device_id: str) -> list[tuple[str, str]]:
 
 
 def cloud_key(provider: str) -> str:
-    if provider == "openai":
-        return os.environ.get("OPENAI_API_KEY", "") or os.environ.get("JARVIS_OPENAI_API_KEY", "")
-    if provider == "openrouter":
-        return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
-    return os.environ.get("GROQ_API_KEY", "") or os.environ.get("JARVIS_GROQ_API_KEY", "")
+    return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
 
 
 def available_cloud_providers() -> list[str]:
-    order = [DEFAULT_PROVIDER] if DEFAULT_PROVIDER in {"openai", "openrouter", "groq"} else []
-    order.extend(["openai", "openrouter", "groq"])
-    return [provider for provider in dict.fromkeys(order) if cloud_key(provider)]
+    return ["openrouter"] if cloud_key("openrouter") else []
 
 
 def provider_model(provider: str) -> str:
-    specific_env = {"openai": "JARVIS_OPENAI_MODEL", "openrouter": "JARVIS_OPENROUTER_MODEL", "groq": "JARVIS_GROQ_MODEL"}
-    defaults = {"openai": "gpt-5.4-mini", "openrouter": "tencent/hy3:free", "groq": "openai/gpt-oss-120b"}
-    return os.environ.get(specific_env[provider], "").strip() or DEFAULT_MODEL or defaults[provider]
+    return os.environ.get("JARVIS_OPENROUTER_MODEL", "").strip() or DEFAULT_MODEL or "tencent/hy3:free"
 
 
 def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> str | None:
@@ -189,45 +181,20 @@ def cloud_generate(prompt: str, history: list[dict[str, str]] | None = None) -> 
         model = provider_model(provider)
         key = cloud_key(provider)
         try:
-            if provider == "openrouter":
-                response = requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": os.environ.get("JARVIS_OPENROUTER_REFERER", "https://jarvis.web"),
-                        "X-OpenRouter-Title": APP_TITLE,
-                    },
-                    json={"model": model, "messages": messages, "temperature": 0.5, "max_tokens": 1200},
-                    timeout=35,
-                )
-            elif provider == "openai":
-                response = requests.post(
-                    "https://api.openai.com/v1/responses",
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json={"model": model, "input": messages, "max_output_tokens": 1200},
-                    timeout=35,
-                )
-            else:
-                response = requests.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json={"model": model, "messages": messages, "temperature": 0.5, "max_tokens": 1200},
-                    timeout=35,
-                )
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": os.environ.get("JARVIS_OPENROUTER_REFERER", "https://jarvis.web"),
+                    "X-OpenRouter-Title": APP_TITLE,
+                },
+                json={"model": model, "messages": messages, "reasoning": {"enabled": True}, "temperature": 0.5, "max_tokens": 1200},
+                timeout=35,
+            )
             response.raise_for_status()
             data = response.json()
-            if provider == "openai":
-                answer = clean_text(data.get("output_text", ""))
-                if not answer:
-                    answer = clean_text("".join(
-                        str(content.get("text", ""))
-                        for item in data.get("output", [])
-                        for content in item.get("content", [])
-                        if content.get("type") in {"output_text", "text"}
-                    ))
-            else:
-                answer = clean_text(data["choices"][0]["message"]["content"])
+            answer = clean_text(data["choices"][0]["message"]["content"])
             if answer:
                 return answer
         except Exception as exc:
@@ -1296,7 +1263,7 @@ def status_payload() -> dict[str, Any]:
         "version": APP_VERSION,
         "time": now_stamp(),
         "provider": selected,
-        "model": provider_model(selected) if selected in {"openai", "openrouter", "groq"} else "not configured",
+        "model": provider_model("openrouter") if providers else "not configured",
         "cloud_brain_configured": bool(providers),
         "device_control": False,
         "network_mode": "cloud-safe",
