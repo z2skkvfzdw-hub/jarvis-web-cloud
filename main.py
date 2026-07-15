@@ -519,7 +519,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         </div>
         """
     suggestions = "" if load_chat(chat_id) else """
-    <div class="suggestions" id="composer-suggestions">
+    <div class="suggestions composer-suggestions" id="composer-suggestions">
         <button class="suggestion" data-prompt="search: " type="button">Research</button>
         <button class="suggestion" data-prompt="Help me write this: " type="button">Write</button>
         <button class="suggestion" data-prompt="Give me ideas for " type="button">Ideas</button>
@@ -536,7 +536,9 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <span class="eyebrow">Prototype workspace</span>
                     <h2>Build with Jarvis</h2>
                 </div>
-                <span class="panel-icon" aria-hidden="true">&rsaquo;</span>
+                <button class="icon-button" id="workspace-close" type="button" title="Close prototype workspace" aria-label="Close prototype workspace">
+                    <span aria-hidden="true">&rsaquo;</span>
+                </button>
             </header>
             <div class="workspace-scroll">
                 <section class="core-section">
@@ -584,6 +586,7 @@ def page_html(chat_id: str, device_id: str) -> str:
     <meta name="apple-mobile-web-app-title" content="Jarvis">
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         * {{ box-sizing: border-box; }}
         body {{
@@ -602,7 +605,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             padding: 18px 10px;
             overflow-y: auto;
         }}
-        .brand-shell {{
+        .sidebar-topline {{
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -630,7 +633,13 @@ def page_html(chat_id: str, device_id: str) -> str:
             font-weight: 700;
         }}
         .brand-name {{ font-size: 18px; font-weight: 650; }}
-        .brand-menu {{
+        .item-menu {{
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .item-menu > summary, .brand-menu {{
             width: 28px;
             height: 28px;
             display: inline-flex;
@@ -641,8 +650,11 @@ def page_html(chat_id: str, device_id: str) -> str:
             background: transparent;
             color: #9aa7aa;
             font-size: 20px;
+            list-style: none;
+            cursor: pointer;
         }}
-        .nav {{ display: grid; gap: 4px; margin: 26px 0 28px; }}
+        .item-menu > summary::-webkit-details-marker {{ display: none; }}
+        .sidebar-nav {{ display: grid; gap: 4px; margin: 26px 0 28px; }}
         .nav-item {{
             height: 44px;
             display: flex;
@@ -856,13 +868,15 @@ def page_html(chat_id: str, device_id: str) -> str:
         .chat-row.active {{ background: #112024; }}
         .main {{ min-width: 420px; }}
         .topbar {{ height: 58px; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #10191b; background: var(--bg); }}
-        .topbar-title {{
+        .title {{
             display: block;
             color: #c7d6d8;
             font-family: Consolas, "Cascadia Code", monospace;
             font-size: 12px;
+            letter-spacing: 0;
             text-transform: uppercase;
         }}
+        .topbar-actions {{ display: flex; align-items: center; gap: 10px; }}
         .mode {{
             background: #0b1416;
             color: var(--accent);
@@ -942,7 +956,9 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         .workspace-header h2 {{ margin: 5px 0 0; font-size: 16px; font-weight: 600; color: #f2f7f7; }}
         .eyebrow {{ color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
-        .panel-icon {{ width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #263639; border-radius: 6px; background: #0b1113; color: #b7c8ca; font-size: 22px; }}
+        .icon-button {{ width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #263639; border-radius: 6px; background: #0b1113; color: #b7c8ca; cursor: pointer; padding: 0; }}
+        .icon-button:hover {{ color: var(--accent); border-color: #2a686c; }}
+        .workspace-open {{ display: none !important; }}
         .workspace-scroll {{ overflow-y: auto; }}
         .core-section {{ position: relative; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }}
         #jarvis-core {{ display: block; width: 100%; aspect-ratio: 16 / 9; background: #030607; border: 1px solid #142326; }}
@@ -962,47 +978,56 @@ def page_html(chat_id: str, device_id: str) -> str:
         .workspace-actions {{ display: grid; gap: 7px; margin-top: 10px; }}
         .workspace-actions button {{ min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 1px solid #1d3033; border-radius: 6px; background: #0a1012; color: #d4e0e1; font-size: 12px; text-align: left; cursor: pointer; }}
         .workspace-actions button:hover {{ border-color: #2e686c; color: #fff; }}
+        body.workspace-collapsed .workspace-panel {{ width: 0; flex-basis: 0; opacity: 0; overflow: hidden; border: 0; }}
+        body.workspace-collapsed .workspace-open {{ display: inline-flex !important; }}
         @media (max-width: 1240px) {{
             .workspace-panel {{ display: none; }}
-            .chat-inner, .chat-form, .suggestions, .hint {{ max-width: 820px; }}
+            .workspace-open {{ display: none !important; }}
+            .chat-inner, .chat-form, .composer-suggestions, .hint {{ max-width: 820px; }}
         }}
         @media (max-width:760px) {{
             .main {{ min-width: 0; }}
             .topbar {{ height: 52px; padding: 0 14px; }}
-            .topbar-title {{ font-size: 11px; }}
+            .title {{ font-size: 11px; }}
             .mode {{ font-size: 10px; padding: 6px 8px; }}
             .empty-state {{ min-height: calc(100vh - 250px); }}
             .empty-state h1 {{ font-size: 28px; }}
             .empty-state p {{ font-size: 13px; }}
-            .suggestions {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; overflow:visible; }}
-            .suggestion {{ min-width:0; width:100%; padding:0 7px; font-size:12px; }}
+            .composer-suggestions {{ justify-content: flex-start; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; overflow:visible; }}
+            .composer-suggestions .suggestion {{ min-width:0; width:100%; padding:0 7px; font-size:12px; }}
             .chat-form {{ min-height: 60px; padding-left: 10px; }}
             .chat-form::before {{ display: none; }}
         }}
     </style>
 </head>
-<body>
+<body class="guest-version">
     <div class="app">
         <aside class="sidebar">
-            <div class="brand-shell">
+            <div class="sidebar-topline">
                 <a class="brand-row" href="/">
                     <span class="brand-mark">J</span>
                     <span class="brand-name">{APP_TITLE}</span>
                 </a>
-                <span class="brand-menu" aria-hidden="true">&#8230;</span>
+                <span class="item-menu global-menu" aria-hidden="true"><span class="brand-menu">&#8942;</span></span>
             </div>
-            <nav class="nav">
-                <a class="nav-item nav-primary" href="/new"><span class="nav-icon">+</span><span>New chat</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">?</span><span>Search chats</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">#</span><span>Library</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">[]</span><span>Projects</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">::</span><span>Apps</span></a>
+            <nav class="sidebar-nav" aria-label="Jarvis navigation">
+                <a class="nav-item nav-primary" href="/new"><span class="nav-icon">&#9998;</span><span>New chat</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">&#8981;</span><span>Search chats</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">&#9636;</span><span>Library</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">&#128193;</span><span>Projects</span></a>
+                <a class="nav-item" href="/"><span class="nav-icon">&#8759;</span><span>Apps</span></a>
             </nav>
-            <div class="recents-header">Recents</div>
+            <div class="recents-header"><span>Recents</span></div>
             {sidebar}
         </aside>
         <main class="main">
-            <header class="topbar"><div class="topbar-title">JARVIS / CONVERSATION CORE</div><div class="mode">Secure &amp; Safe</div></header>
+            <header class="topbar">
+                <div class="title">JARVIS / CONVERSATION CORE</div>
+                <div class="topbar-actions">
+                    <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
+                    <div class="mode">Secure &amp; Safe</div>
+                </div>
+            </header>
             <section class="chat" id="chat">
                 <div class="chat-inner" id="messages">
                     {empty_state}
@@ -1012,10 +1037,10 @@ def page_html(chat_id: str, device_id: str) -> str:
             <section class="composer">
                 <form class="chat-form" id="chat-form">
                     <textarea id="message-input" name="message" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
-                    <button class="send-button" id="send-button" type="submit">&uarr;</button>
+                    <button class="send-button" id="send-button" type="submit">Send</button>
                 </form>
                 {suggestions}
-                <div class="hint">Cloud Jarvis works without the owner's computer. Local device controls require desktop Jarvis.</div>
+                <div class="hint">Enter sends. Shift+Enter adds a new line.</div>
             </section>
         </main>
         {workspace_panel}
@@ -1029,6 +1054,8 @@ def page_html(chat_id: str, device_id: str) -> str:
         const button = document.getElementById("send-button");
         const emptyState = document.getElementById("empty-state");
         const suggestions = document.getElementById("composer-suggestions");
+        const workspaceClose = document.getElementById("workspace-close");
+        const workspaceOpen = document.getElementById("workspace-open");
         const coreState = document.getElementById("core-state");
         const statusLight = document.getElementById("status-light");
         const latencyReadout = document.getElementById("latency-readout");
@@ -1118,6 +1145,9 @@ def page_html(chat_id: str, device_id: str) -> str:
                 input.focus();
             }});
         }});
+        if (workspaceClose) workspaceClose.addEventListener("click", () => document.body.classList.add("workspace-collapsed"));
+        if (workspaceOpen) workspaceOpen.addEventListener("click", () => document.body.classList.remove("workspace-collapsed"));
+        if (window.lucide) lucide.createIcons();
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
