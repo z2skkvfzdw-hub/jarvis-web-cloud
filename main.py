@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.5"
-CACHE_VERSION = "jarvis-ai-1-2-5"
+APP_VERSION = "1.2.6"
+CACHE_VERSION = "jarvis-ai-1-2-6"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -833,7 +833,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         .image-result-title, .image-result-source {{ display: block; padding: 8px 9px 0; font-size: 12px; line-height: 1.3; }}
         .image-result-source {{ padding: 0 9px 9px; color: #a7a7a7; font-size: 11px; }}
-        @media (max-width: 760px) {{
+        @media (max-width: 900px) {{
             .sidebar {{ display: none; }}
             .topbar {{ height: 48px; padding: 0 14px; }}
             .chat {{ padding: 4px 14px 10px; }}
@@ -996,7 +996,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             }}
             .empty-state p {{ max-width: 440px; }}
         }}
-        @media (max-width:760px) {{
+        @media (max-width:900px) {{
             html, body {{ width: 100%; overflow-x: hidden; }}
             .app {{ min-height: 100dvh; height: 100dvh; overflow: hidden; }}
             .main {{ min-width: 0; }}
