@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.3.0"
-CACHE_VERSION = "jarvis-ai-1-3-0"
+APP_VERSION = "1.3.1"
+CACHE_VERSION = "jarvis-ai-1-3-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -526,6 +526,28 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <div class="core-hex">J</div>
                 </div>
             </section>
+            <section class="activity-ledger" aria-label="Jarvis activity ledger">
+                <div class="ledger-card primary">
+                    <span>Today</span>
+                    <strong data-activity-metric="credits">0.00 JC</strong>
+                    <small>Jarvis credits, not cash</small>
+                </div>
+                <div class="ledger-card">
+                    <span>Runs</span>
+                    <strong data-activity-metric="runs">0</strong>
+                    <small>responses completed</small>
+                </div>
+                <div class="ledger-card">
+                    <span>Average</span>
+                    <strong data-activity-metric="average">--</strong>
+                    <small>thinking time</small>
+                </div>
+                <div class="ledger-card activity">
+                    <span>Activity</span>
+                    <div class="mini-bars" data-activity-bars></div>
+                    <small data-activity-metric="last">waiting</small>
+                </div>
+            </section>
             <section class="launch-grid" aria-label="Quick launch prompts">
                 <button data-prompt="Build a modern web page for " type="button"><span>Build</span><strong>Website</strong></button>
                 <button data-prompt="Research and summarise " type="button"><span>Research</span><strong>Brief</strong></button>
@@ -565,6 +587,17 @@ def page_html(chat_id: str, device_id: str) -> str:
                         <span class="status-light" id="status-light"></span>
                         <span id="core-state">READY</span>
                         <strong id="latency-readout">--</strong>
+                    </div>
+                </section>
+                <section class="workspace-section earnings-card">
+                    <div class="section-heading"><span class="eyebrow">AI time ledger</span><span data-activity-metric="live">IDLE</span></div>
+                    <strong class="credit-amount" data-activity-metric="credits">0.00 JC</strong>
+                    <p>Local session activity. No real money, no ads, no payout claim.</p>
+                    <div class="mini-bars wide" data-activity-bars></div>
+                    <div class="earnings-stats">
+                        <div><span>Runs</span><strong data-activity-metric="runs">0</strong></div>
+                        <div><span>Average</span><strong data-activity-metric="average">--</strong></div>
+                        <div><span>Last</span><strong data-activity-metric="last">waiting</strong></div>
                     </div>
                 </section>
                 <section class="workspace-section">
@@ -1035,6 +1068,47 @@ def page_html(chat_id: str, device_id: str) -> str:
         .launch-grid button:hover {{ border-color: rgba(69, 240, 255, 0.86); transform: translateY(-1px); }}
         .launch-grid span {{ display: block; color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
         .launch-grid strong {{ display: block; margin-top: 8px; font-size: 18px; font-weight: 650; }}
+        .activity-ledger {{
+            display: grid;
+            grid-template-columns: 1.2fr 1fr 1fr 1.4fr;
+            gap: 10px;
+            margin-top: 12px;
+        }}
+        .ledger-card {{
+            min-height: 86px;
+            padding: 13px 14px;
+            border: 1px solid rgba(36, 74, 104, 0.88);
+            border-radius: 10px;
+            background:
+                radial-gradient(circle at 86% 18%, rgba(152, 255, 114, 0.12), transparent 28%),
+                linear-gradient(160deg, rgba(8, 22, 36, 0.96), rgba(4, 10, 18, 0.94));
+            box-shadow: inset 0 0 24px rgba(69, 240, 255, 0.05);
+        }}
+        .ledger-card.primary {{
+            border-color: rgba(152, 255, 114, 0.38);
+            background:
+                radial-gradient(circle at 84% 14%, rgba(152, 255, 114, 0.18), transparent 30%),
+                linear-gradient(150deg, rgba(9, 32, 39, 0.98), rgba(4, 10, 18, 0.94));
+        }}
+        .ledger-card span {{ display: block; color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
+        .ledger-card strong {{ display: block; margin-top: 8px; color: #f4fbff; font-size: 22px; line-height: 1.05; }}
+        .ledger-card small {{ display: block; margin-top: 7px; color: #88a6b4; font-size: 11px; line-height: 1.3; }}
+        .mini-bars {{
+            height: 34px;
+            display: flex;
+            align-items: flex-end;
+            gap: 4px;
+            margin-top: 8px;
+        }}
+        .mini-bars i {{
+            flex: 1;
+            min-width: 3px;
+            height: 18%;
+            border-radius: 999px 999px 2px 2px;
+            background: linear-gradient(180deg, var(--signal), var(--accent));
+            box-shadow: 0 0 10px rgba(69, 240, 255, 0.18);
+            opacity: 0.72;
+        }}
         .message.jarvis .bubble {{ color: #e5f0f1; }}
         .message.user .bubble {{ background: #0d2438; color: #f1f8ff; border: 1px solid #245a82; border-radius: 10px; }}
         .chat-form {{
@@ -1105,6 +1179,39 @@ def page_html(chat_id: str, device_id: str) -> str:
         .status-light {{ width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px rgba(152, 223, 114, 0.65); }}
         .status-light.busy {{ background: var(--warning); box-shadow: 0 0 10px rgba(232, 184, 95, 0.65); }}
         .workspace-section {{ padding: 17px 18px; border-bottom: 1px solid var(--line); }}
+        .earnings-card {{
+            background:
+                radial-gradient(circle at 88% 12%, rgba(152, 255, 114, 0.12), transparent 32%),
+                linear-gradient(180deg, rgba(8, 23, 31, 0.88), rgba(5, 10, 15, 0.96));
+        }}
+        .earnings-card .section-heading span[aria-hidden="true"],
+        .earnings-card .section-heading span[data-activity-metric="live"] {{
+            color: var(--signal);
+            font: 10px/1.2 Consolas, "Cascadia Code", monospace;
+        }}
+        .credit-amount {{
+            display: block;
+            margin: 9px 0 6px;
+            color: #f4fbff;
+            font-size: 30px;
+            line-height: 1;
+            letter-spacing: 0;
+        }}
+        .mini-bars.wide {{ height: 42px; margin: 13px 0 8px; }}
+        .earnings-stats {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }}
+        .earnings-stats div {{
+            padding: 8px;
+            border: 1px solid rgba(36, 74, 104, 0.62);
+            border-radius: 7px;
+            background: rgba(2, 8, 14, 0.55);
+        }}
+        .earnings-stats span {{ display: block; color: #708084; font-size: 10px; }}
+        .earnings-stats strong {{ display: block; margin-top: 4px; color: #d9e5e5; font-size: 11px; overflow-wrap: anywhere; }}
         .workspace-section h3 {{ margin: 8px 0 6px; color: #e8f2f2; font-size: 15px; font-weight: 600; line-height: 1.35; }}
         .workspace-section p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }}
         .telemetry-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }}
@@ -1132,6 +1239,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             .hero-core {{ display: none; }}
             .empty-state p {{ max-width: 560px; }}
             .launch-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .activity-ledger {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
         }}
         @media (max-width:900px) {{
             html, body {{ width: 100%; overflow-x: hidden; }}
@@ -1192,6 +1300,11 @@ def page_html(chat_id: str, device_id: str) -> str:
             .launch-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }}
             .launch-grid button {{ min-height: 70px; padding: 10px; border-radius: 9px; }}
             .launch-grid strong {{ font-size: 15px; margin-top: 6px; }}
+            .activity-ledger {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }}
+            .ledger-card {{ min-height: 70px; padding: 10px; border-radius: 9px; }}
+            .ledger-card strong {{ font-size: 17px; margin-top: 6px; }}
+            .ledger-card small {{ font-size: 10px; margin-top: 5px; }}
+            .mini-bars {{ height: 26px; }}
             .message {{ margin: 14px 0; }}
             .bubble {{ max-width: 100%; padding: 10px 0; font-size: 15px; line-height: 1.5; }}
             .message.user .bubble {{ max-width: 88%; padding: 10px 12px; border-radius: 10px; }}
@@ -1236,6 +1349,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             .mode {{ padding: 7px 8px; }}
             .empty-state {{ padding-top: 22px; }}
             .launch-grid {{ grid-template-columns: 1fr; }}
+            .activity-ledger {{ grid-template-columns: 1fr; }}
             .composer-suggestions .suggestion {{ font-size: 12px; }}
         }}
     </style>
@@ -1300,11 +1414,66 @@ def page_html(chat_id: str, device_id: str) -> str:
         const coreState = document.getElementById("core-state");
         const statusLight = document.getElementById("status-light");
         const latencyReadout = document.getElementById("latency-readout");
+        const activityKey = "jarvis_web_activity_v1";
+        let activityState = loadActivityState();
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
         function setCoreState(label, busy = false) {{
             if (coreState) coreState.textContent = label;
             if (statusLight) statusLight.classList.toggle("busy", busy);
+        }}
+        function loadActivityState() {{
+            try {{
+                const saved = JSON.parse(localStorage.getItem(activityKey) || "{{}}");
+                return {{
+                    runs: Number(saved.runs) || 0,
+                    totalMs: Number(saved.totalMs) || 0,
+                    history: Array.isArray(saved.history) ? saved.history.slice(-10).map(Number).filter(Number.isFinite) : []
+                }};
+            }} catch (error) {{
+                return {{ runs: 0, totalMs: 0, history: [] }};
+            }}
+        }}
+        function saveActivityState() {{
+            try {{ localStorage.setItem(activityKey, JSON.stringify(activityState)); }} catch (error) {{}}
+        }}
+        function setMetric(name, value) {{
+            document.querySelectorAll(`[data-activity-metric="${{name}}"]`).forEach(item => item.textContent = value);
+        }}
+        function formatDuration(ms) {{
+            if (!ms) return "--";
+            const seconds = ms / 1000;
+            return seconds < 10 ? `${{seconds.toFixed(1)}}s` : `${{Math.round(seconds)}}s`;
+        }}
+        function renderActivityBars() {{
+            const history = activityState.history.length ? activityState.history : [0, 0, 0, 0, 0, 0];
+            const max = Math.max(...history, 1);
+            document.querySelectorAll("[data-activity-bars]").forEach(container => {{
+                container.innerHTML = history.slice(-10).map(ms => {{
+                    const height = Math.max(14, Math.round((ms / max) * 100));
+                    return `<i style="height:${{height}}%"></i>`;
+                }}).join("");
+            }});
+        }}
+        function updateActivityDashboard(live = "IDLE") {{
+            const credits = ((activityState.totalMs / 1000) * 0.03).toFixed(2) + " JC";
+            const average = activityState.runs ? formatDuration(activityState.totalMs / activityState.runs) : "--";
+            const last = activityState.history.length ? formatDuration(activityState.history[activityState.history.length - 1]) : "waiting";
+            setMetric("credits", credits);
+            setMetric("runs", String(activityState.runs));
+            setMetric("average", average);
+            setMetric("last", last);
+            setMetric("live", live);
+            renderActivityBars();
+        }}
+        function recordActivityRun(elapsedMs) {{
+            const cleanMs = Math.max(250, Math.min(Number(elapsedMs) || 0, 120000));
+            activityState.runs += 1;
+            activityState.totalMs += cleanMs;
+            activityState.history.push(cleanMs);
+            activityState.history = activityState.history.slice(-10);
+            saveActivityState();
+            updateActivityDashboard("CREDITED");
         }}
         function startCoreVisual() {{
             const canvas = document.getElementById("jarvis-core");
@@ -1398,6 +1567,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
+            const startedAt = Date.now();
             addMessage("user", text);
             input.value = "";
             button.disabled = true;
@@ -1405,6 +1575,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             let thinkingStep=0;
             const thinkingTimer=window.setInterval(()=>{{thinkingStep=(thinkingStep+1)%4;placeholder.querySelector(".bubble").textContent="Analysing"+".".repeat(thinkingStep);}},350);
             setCoreState("ANALYSING", true);
+            updateActivityDashboard("THINKING");
             try {{
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
@@ -1413,13 +1584,17 @@ def page_html(chat_id: str, device_id: str) -> str:
                 }});
                 const data = await response.json();
                 placeholder.querySelector(".bubble").innerHTML = renderContent(data.answer || "No response.");
-                if(data.elapsed_ms&&latencyReadout) latencyReadout.textContent=`${{(data.elapsed_ms/1000).toFixed(1)}}s`;
+                const elapsedMs = Number(data.elapsed_ms) || (Date.now() - startedAt);
+                if(elapsedMs&&latencyReadout) latencyReadout.textContent=`${{(elapsedMs/1000).toFixed(1)}}s`;
+                recordActivityRun(elapsedMs);
             }} catch (error) {{
                 placeholder.querySelector(".bubble").textContent = "Connection error. Jarvis.AI did not respond.";
+                updateActivityDashboard("ERROR");
             }} finally {{
                 window.clearInterval(thinkingTimer);
                 button.disabled = false;
                 setCoreState("READY", false);
+                window.setTimeout(() => updateActivityDashboard("IDLE"), 1600);
                 input.focus();
                 scrollDown();
             }}
@@ -1434,6 +1609,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         if ("serviceWorker" in navigator) {{
             navigator.serviceWorker.register("/sw.js").catch(() => {{}});
         }}
+        updateActivityDashboard();
         startCoreVisual();
         scrollDown();
     </script>
