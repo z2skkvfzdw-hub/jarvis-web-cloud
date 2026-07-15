@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.4"
-CACHE_VERSION = "jarvis-ai-1-2-4"
+APP_VERSION = "1.2.5"
+CACHE_VERSION = "jarvis-ai-1-2-5"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -877,6 +877,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             text-transform: uppercase;
         }}
         .topbar-actions {{ display: flex; align-items: center; gap: 10px; }}
+        .mobile-new-chat {{ display: none; }}
         .mode {{
             background: #0b1416;
             color: var(--accent);
@@ -996,17 +997,100 @@ def page_html(chat_id: str, device_id: str) -> str:
             .empty-state p {{ max-width: 440px; }}
         }}
         @media (max-width:760px) {{
+            html, body {{ width: 100%; overflow-x: hidden; }}
+            .app {{ min-height: 100dvh; height: 100dvh; overflow: hidden; }}
             .main {{ min-width: 0; }}
-            .topbar {{ height: 52px; padding: 0 14px; }}
-            .title {{ font-size: 11px; }}
-            .mode {{ font-size: 10px; padding: 6px 8px; }}
-            .empty-state {{ min-height: calc(100vh - 250px); }}
-            .empty-state h1 {{ font-size: 28px; }}
-            .empty-state p {{ font-size: 13px; }}
-            .composer-suggestions {{ justify-content: flex-start; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; overflow:visible; }}
-            .composer-suggestions .suggestion {{ min-width:0; width:100%; padding:0 7px; font-size:12px; }}
-            .chat-form {{ min-height: 60px; padding-left: 10px; }}
+            .topbar {{
+                height: 52px;
+                padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+                position: sticky;
+                top: 0;
+                z-index: 30;
+            }}
+            .title {{ font-size: 0; }}
+            .title::after {{
+                content: "Jarvis.Ai";
+                color: #f4ffff;
+                font-size: 14px;
+                font-weight: 700;
+                text-transform: none;
+                letter-spacing: 0;
+            }}
+            .topbar-actions {{ gap: 8px; }}
+            .mobile-new-chat {{
+                width: 32px;
+                height: 32px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid #213438;
+                border-radius: 8px;
+                background: #0b1416;
+                color: var(--accent);
+                text-decoration: none;
+                font-size: 20px;
+                line-height: 1;
+            }}
+            .mode {{ font-size: 0; padding: 7px 9px; border-radius: 8px; }}
+            .mode::after {{ content: "Safe"; font-size: 10px; }}
+            .chat {{
+                padding: 10px 14px 8px;
+                overflow-x: hidden;
+                overscroll-behavior: contain;
+            }}
+            .chat-inner {{ width: 100%; max-width: none; }}
+            .empty-state {{
+                min-height: clamp(190px, 38dvh, 270px);
+                width: 100%;
+                padding: 28px 6px 18px;
+            }}
+            .system-kicker {{ font-size: 10px; margin-bottom: 14px; }}
+            .empty-state h1 {{ font-size: clamp(28px, 8vw, 34px); line-height: 1.1; }}
+            .empty-state p {{ max-width: 320px; font-size: 13px; line-height: 1.45; }}
+            .message {{ margin: 14px 0; }}
+            .bubble {{ max-width: 100%; padding: 10px 0; font-size: 15px; line-height: 1.5; }}
+            .message.user .bubble {{ max-width: 88%; padding: 10px 12px; border-radius: 10px; }}
+            .composer {{
+                position: sticky;
+                bottom: 0;
+                z-index: 25;
+                padding: 8px 12px calc(14px + env(safe-area-inset-bottom));
+                border-top: 1px solid #10191b;
+            }}
+            .chat-form {{
+                width: 100%;
+                min-height: 56px;
+                border-radius: 12px;
+                padding: 8px 8px 8px 12px;
+                gap: 8px;
+            }}
             .chat-form::before {{ display: none; }}
+            textarea {{
+                min-height: 38px;
+                padding: 8px 2px;
+                font-size: 16px;
+                line-height: 1.35;
+            }}
+            .send-button {{ width: 40px; height: 40px; border-radius: 10px; }}
+            .composer-suggestions {{
+                max-width: none;
+                justify-content: stretch;
+                display:grid;
+                grid-template-columns:repeat(2,minmax(0,1fr));
+                gap:8px;
+                margin-top: 10px;
+                overflow:visible;
+            }}
+            .composer-suggestions .suggestion {{ min-width:0; width:100%; height:38px; min-height:38px; padding:0 8px; font-size:13px; }}
+            .hint {{ display: none; }}
+            .image-gallery {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+        }}
+        @media (max-width:380px) {{
+            .topbar-actions {{ gap: 6px; }}
+            .mobile-new-chat {{ width: 30px; height: 30px; }}
+            .mode {{ padding: 7px 8px; }}
+            .empty-state {{ padding-top: 22px; }}
+            .composer-suggestions .suggestion {{ font-size: 12px; }}
         }}
     </style>
 </head>
@@ -1034,6 +1118,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             <header class="topbar">
                 <div class="title">JARVIS / CONVERSATION CORE</div>
                 <div class="topbar-actions">
+                    <a class="mobile-new-chat" href="/new" title="New chat" aria-label="New chat">+</a>
                     <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
                     <div class="mode">Secure &amp; Safe</div>
                 </div>
