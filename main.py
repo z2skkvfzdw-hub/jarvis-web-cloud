@@ -23,8 +23,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.2.6"
-CACHE_VERSION = "jarvis-ai-1-2-6"
+APP_VERSION = "1.3.0"
+CACHE_VERSION = "jarvis-ai-1-3-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -513,17 +513,35 @@ def page_html(chat_id: str, device_id: str) -> str:
     if not load_chat(chat_id):
         empty_state = """
         <div class="empty-state" id="empty-state">
-            <div class="system-kicker"><span></span> JARVIS SYSTEM READY</div>
-            <h1>How can I help?</h1>
-            <p>Secure chat, study help, explanations, and safe web search.</p>
+            <section class="hero-shell" aria-label="Jarvis command centre">
+                <div class="hero-copy">
+                    <div class="system-kicker"><span></span> JARVIS WEB INTERFACE ONLINE</div>
+                    <h1>What shall we build?</h1>
+                    <p>Describe a site, study task, research problem, image idea, or plan. Jarvis will route it through the cloud-safe workspace.</p>
+                </div>
+                <div class="hero-core" aria-hidden="true">
+                    <div class="core-ring ring-one"></div>
+                    <div class="core-ring ring-two"></div>
+                    <div class="core-ring ring-three"></div>
+                    <div class="core-hex">J</div>
+                </div>
+            </section>
+            <section class="launch-grid" aria-label="Quick launch prompts">
+                <button data-prompt="Build a modern web page for " type="button"><span>Build</span><strong>Website</strong></button>
+                <button data-prompt="Research and summarise " type="button"><span>Research</span><strong>Brief</strong></button>
+                <button data-prompt="Create study notes for " type="button"><span>Study</span><strong>Lesson</strong></button>
+                <button data-prompt="Show image ideas for " type="button"><span>Visual</span><strong>Ideas</strong></button>
+                <button data-prompt="Plan this project: " type="button"><span>Plan</span><strong>Project</strong></button>
+                <button data-prompt="Explain this simply: " type="button"><span>Explain</span><strong>Concept</strong></button>
+            </section>
         </div>
         """
     suggestions = "" if load_chat(chat_id) else """
     <div class="suggestions composer-suggestions" id="composer-suggestions">
-        <button class="suggestion" data-prompt="search: " type="button">Research</button>
-        <button class="suggestion" data-prompt="Help me write this: " type="button">Write</button>
-        <button class="suggestion" data-prompt="Give me ideas for " type="button">Ideas</button>
-        <button class="suggestion" data-prompt="Answer this: " type="button">Ask</button>
+        <button class="suggestion" data-prompt="Find " type="button"><span data-lucide="search"></span>Find</button>
+        <button class="suggestion" data-prompt="Think through " type="button"><span data-lucide="brain-circuit"></span>Think</button>
+        <button class="suggestion" data-prompt="Show visual ideas for " type="button"><span data-lucide="image"></span>Visuals</button>
+        <button class="suggestion" data-prompt="Help me study " type="button"><span data-lucide="book-open"></span>Study</button>
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
@@ -533,8 +551,8 @@ def page_html(chat_id: str, device_id: str) -> str:
         <aside class="workspace-panel" aria-label="Prototype workspace">
             <header class="workspace-header">
                 <div>
-                    <span class="eyebrow">Prototype workspace</span>
-                    <h2>Build with Jarvis</h2>
+                    <span class="eyebrow">Command deck</span>
+                    <h2>Jarvis workspace</h2>
                 </div>
                 <button class="icon-button" id="workspace-close" type="button" title="Close prototype workspace" aria-label="Close prototype workspace">
                     <span aria-hidden="true">&rsaquo;</span>
@@ -551,8 +569,8 @@ def page_html(chat_id: str, device_id: str) -> str:
                 </section>
                 <section class="workspace-section">
                     <span class="eyebrow">Active context</span>
-                    <h3>No active project</h3>
-                    <p>Tell Jarvis what you want to build.</p>
+                    <h3>Cloud-safe build mode</h3>
+                    <p>Use Jarvis for research, design planning, study help, images, and web-safe tasks.</p>
                 </section>
                 <section class="workspace-section telemetry-grid">
                     <div><span>Brain</span><strong>{html.escape(brain_label)}</strong></div>
@@ -561,16 +579,16 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <div><span>Tools</span><strong>Available</strong></div>
                 </section>
                 <section class="workspace-section">
-                    <div class="section-heading"><span class="eyebrow">Projects</span><span aria-hidden="true">[]</span></div>
-                    <p class="workspace-empty">No saved projects yet.</p>
+                    <div class="section-heading"><span class="eyebrow">Prompt systems</span><span aria-hidden="true">06</span></div>
+                    <p class="workspace-empty">Build, research, write, study, visualise, and explain.</p>
                 </section>
                 <section class="workspace-section">
-                    <span class="eyebrow">Start a task</span>
+                    <span class="eyebrow">Launch sequence</span>
                     <div class="workspace-actions">
-                        <button data-prompt="Help me plan " type="button">Plan a project</button>
-                        <button data-prompt="Summarise this: " type="button">Summarise text</button>
-                        <button data-prompt="Give me study questions for " type="button">Study drill</button>
-                        <button data-prompt="Look up " type="button">Research topic</button>
+                        <button data-prompt="Build a web page for " type="button">Build interface</button>
+                        <button data-prompt="Create a research brief about " type="button">Research brief</button>
+                        <button data-prompt="Make a study plan for " type="button">Study plan</button>
+                        <button data-prompt="Generate visual ideas for " type="button">Visual ideas</button>
                     </div>
                 </section>
             </div>
@@ -845,29 +863,52 @@ def page_html(chat_id: str, device_id: str) -> str:
             .suggestions {{ overflow-x: auto; justify-content: flex-start; padding-bottom: 4px; }}
             .suggestion {{ white-space: nowrap; min-width: max-content; }}
         }}
-        /* Jarvis.Ai prototype workspace shell */
+        /* Jarvis.web command-deck shell */
         :root {{
-            --bg: #050708;
-            --surface: #0b1012;
-            --surface-soft: #11191c;
-            --sidebar: #06090a;
-            --line: #1c2a2e;
-            --text: #edf7f7;
-            --muted: #8a9a9d;
-            --accent: #43e6e3;
-            --signal: #98df72;
-            --warning: #e8b85f;
+            --bg: #02060d;
+            --surface: #07111d;
+            --surface-soft: #0c1b2b;
+            --sidebar: #03070d;
+            --line: #17334d;
+            --line-strong: #25618f;
+            --text: #eef8ff;
+            --muted: #8fa9b8;
+            --accent: #45f0ff;
+            --accent-blue: #2f7dff;
+            --signal: #9cff72;
+            --warning: #ffbd5a;
+            --magenta: #ff4fd8;
         }}
         body, .app, .main, .composer {{ background: var(--bg); color: var(--text); }}
         .app {{ isolation: isolate; }}
-        .sidebar {{ width: 268px; background: var(--sidebar); border-color: var(--line); padding: 18px 10px 96px; }}
-        .brand-mark {{ border-color: #2b7074; background: #0b191b; color: var(--accent); box-shadow: 0 0 18px rgba(67, 230, 227, 0.12); }}
+        .sidebar {{
+            width: 268px;
+            background:
+                linear-gradient(180deg, rgba(12, 29, 48, 0.86), rgba(3, 7, 13, 0.96)),
+                var(--sidebar);
+            border-color: var(--line);
+            padding: 18px 10px 96px;
+        }}
+        .brand-mark {{
+            border-color: #2a82b7;
+            background: #061827;
+            color: var(--accent);
+            box-shadow: 0 0 22px rgba(69, 240, 255, 0.18), inset 0 0 14px rgba(47, 125, 255, 0.16);
+        }}
         .brand-name {{ color: #f4ffff; }}
-        .nav-primary {{ background: #102123; color: var(--accent); border: 1px solid #1d4144; }}
-        .nav-item:hover, .chat-row:hover {{ background: #0d1517; }}
-        .chat-row.active {{ background: #112024; }}
+        .nav-primary {{ background: #092538; color: var(--accent); border: 1px solid #1d6d9f; box-shadow: inset 0 0 18px rgba(47, 125, 255, 0.12); }}
+        .nav-item:hover, .chat-row:hover {{ background: #081625; }}
+        .chat-row.active {{ background: #0d2336; }}
         .main {{ min-width: 420px; }}
-        .topbar {{ height: 58px; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #10191b; background: var(--bg); }}
+        .topbar {{
+            height: 58px;
+            justify-content: space-between;
+            padding: 0 22px;
+            border-bottom: 1px solid var(--line);
+            background:
+                linear-gradient(90deg, rgba(47, 125, 255, 0.08), rgba(69, 240, 255, 0.02)),
+                var(--bg);
+        }}
         .title {{
             display: block;
             color: #c7d6d8;
@@ -879,23 +920,59 @@ def page_html(chat_id: str, device_id: str) -> str:
         .topbar-actions {{ display: flex; align-items: center; gap: 10px; }}
         .mobile-new-chat {{ display: none; }}
         .mode {{
-            background: #0b1416;
+            background: #061522;
             color: var(--accent);
-            border-color: #214247;
+            border-color: #1f668d;
             border-radius: 6px;
             font-family: Consolas, "Cascadia Code", monospace;
             text-transform: uppercase;
         }}
         .chat {{ padding: 8px 24px 12px; }}
-        .chat-inner {{ max-width: 900px; }}
+        .chat-inner {{ max-width: 980px; }}
         .empty-state {{
             min-height: calc(100vh - 300px);
-            width: min(650px, 100%);
+            width: min(860px, 100%);
             display: block;
             justify-content: center;
             text-align: left;
             margin: 0 auto;
-            padding: 12px 8px 34px;
+            padding: 20px 8px 34px;
+        }}
+        .hero-shell {{
+            min-height: 220px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 220px;
+            align-items: center;
+            gap: 28px;
+            padding: 28px;
+            border: 1px solid rgba(37, 97, 143, 0.72);
+            border-radius: 12px;
+            background:
+                radial-gradient(circle at 82% 48%, rgba(47, 125, 255, 0.22), transparent 34%),
+                linear-gradient(135deg, rgba(9, 31, 52, 0.92), rgba(3, 9, 17, 0.86));
+            box-shadow: 0 18px 55px rgba(0, 0, 0, 0.28), inset 0 0 38px rgba(69, 240, 255, 0.05);
+            overflow: hidden;
+            position: relative;
+        }}
+        .hero-shell::before {{
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(69, 240, 255, 0.07) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(69, 240, 255, 0.07) 1px, transparent 1px);
+            background-size: 34px 34px;
+            mask-image: linear-gradient(90deg, rgba(0,0,0,0.8), transparent 76%);
+            pointer-events: none;
+        }}
+        .hero-copy {{ position: relative; z-index: 1; }}
+        .hero-core {{
+            width: 190px;
+            aspect-ratio: 1;
+            justify-self: center;
+            position: relative;
+            display: grid;
+            place-items: center;
         }}
         .system-kicker {{
             display: flex;
@@ -913,31 +990,80 @@ def page_html(chat_id: str, device_id: str) -> str:
             background: var(--signal);
             box-shadow: 0 0 12px rgba(152, 223, 114, 0.7);
         }}
-        .empty-state h1 {{ color: #f2f8f8; font-size: 34px; font-weight: 520; margin: 0 0 10px; }}
-        .empty-state p {{ display: block; max-width: 610px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; }}
-        .message.jarvis .bubble {{ color: #e5f0f1; }}
-        .message.user .bubble {{ background: #152124; color: #f1f6f6; border: 1px solid #26383c; border-radius: 8px; }}
-        .chat-form {{
-            background: #0c1214;
-            border-color: #223236;
-            border-radius: 8px;
-            min-height: 66px;
-            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.24);
+        .empty-state h1 {{ color: #f4fbff; font-size: clamp(36px, 5vw, 54px); font-weight: 620; margin: 0 0 12px; letter-spacing: 0; line-height: 1.02; }}
+        .empty-state p {{ display: block; max-width: 650px; margin: 0; color: #a5bfce; font-size: 16px; line-height: 1.58; }}
+        .core-ring {{
+            position: absolute;
+            inset: 18px;
+            border: 1px solid rgba(69, 240, 255, 0.68);
+            border-radius: 50%;
+            box-shadow: 0 0 24px rgba(69, 240, 255, 0.18);
+            animation: core-spin 18s linear infinite;
         }}
-        .chat-form:focus-within {{ background: #0e1517; border-color: #2d696d; box-shadow: 0 0 0 1px rgba(67, 230, 227, 0.08); }}
+        .ring-two {{ inset: 38px; border-color: rgba(47, 125, 255, 0.84); animation-duration: 11s; animation-direction: reverse; }}
+        .ring-three {{ inset: 58px; border-style: dashed; border-color: rgba(156, 255, 114, 0.6); animation-duration: 26s; }}
+        .core-hex {{
+            width: 64px;
+            height: 64px;
+            display: grid;
+            place-items: center;
+            color: #eafbff;
+            font: 700 24px/1 Consolas, "Cascadia Code", monospace;
+            background: linear-gradient(145deg, rgba(69, 240, 255, 0.18), rgba(47, 125, 255, 0.24));
+            border: 1px solid rgba(69, 240, 255, 0.74);
+            clip-path: polygon(25% 5%,75% 5%,100% 50%,75% 95%,25% 95%,0 50%);
+            box-shadow: 0 0 32px rgba(69, 240, 255, 0.24);
+        }}
+        @keyframes core-spin {{ to {{ transform: rotate(360deg); }} }}
+        .launch-grid {{
+            margin-top: 14px;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }}
+        .launch-grid button {{
+            min-height: 86px;
+            padding: 14px;
+            border: 1px solid rgba(37, 97, 143, 0.78);
+            border-radius: 10px;
+            background: linear-gradient(160deg, rgba(8, 22, 36, 0.96), rgba(4, 10, 18, 0.94));
+            color: var(--text);
+            text-align: left;
+            cursor: pointer;
+            box-shadow: inset 0 0 24px rgba(47, 125, 255, 0.06);
+        }}
+        .launch-grid button:hover {{ border-color: rgba(69, 240, 255, 0.86); transform: translateY(-1px); }}
+        .launch-grid span {{ display: block; color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
+        .launch-grid strong {{ display: block; margin-top: 8px; font-size: 18px; font-weight: 650; }}
+        .message.jarvis .bubble {{ color: #e5f0f1; }}
+        .message.user .bubble {{ background: #0d2438; color: #f1f8ff; border: 1px solid #245a82; border-radius: 10px; }}
+        .chat-form {{
+            background: rgba(5, 15, 26, 0.94);
+            border-color: #245174;
+            border-radius: 12px;
+            min-height: 68px;
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32), inset 0 0 22px rgba(69, 240, 255, 0.04);
+        }}
+        .chat-form:focus-within {{ background: #071827; border-color: #39d7f2; box-shadow: 0 0 0 1px rgba(69, 240, 255, 0.14), 0 0 34px rgba(47, 125, 255, 0.12); }}
         .chat-form::before {{ content: "+"; color: var(--accent); font-size: 23px; }}
         .send-button {{ width: 42px; height: 42px; border-radius: 6px; background: var(--accent); color: #031011; font-size: 0; }}
         .send-button::before {{ content: "\\2191"; color: #031011; font-size: 23px; line-height: 1; }}
+        .composer-suggestions {{ max-width: 860px; }}
         .suggestion {{
             height: 42px;
             min-height: 42px;
             padding: 0 16px;
             border-radius: 6px;
-            background: #090d0f;
-            border-color: #213438;
-            color: #d6e4e5;
+            background: #06131f;
+            border-color: #244a68;
+            color: #d6eaf4;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }}
-        .suggestion:hover {{ background: #10191b; border-color: #2e6266; }}
+        .suggestion svg {{ width: 16px; height: 16px; color: var(--accent); }}
+        .suggestion:hover {{ background: #0b2033; border-color: #43d9ff; }}
         .hint {{ color: #718084; }}
         .workspace-panel {{
             width: 332px;
@@ -965,7 +1091,15 @@ def page_html(chat_id: str, device_id: str) -> str:
         .workspace-open {{ display: none !important; }}
         .workspace-scroll {{ overflow-y: auto; }}
         .core-section {{ position: relative; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }}
-        #jarvis-core {{ display: block; width: 100%; aspect-ratio: 16 / 9; background: #030607; border: 1px solid #142326; }}
+        #jarvis-core {{
+            display: block;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background:
+                radial-gradient(circle at 50% 50%, rgba(47, 125, 255, 0.18), transparent 45%),
+                #020814;
+            border: 1px solid #1c4f78;
+        }}
         .core-readout {{ min-height: 30px; display: flex; align-items: center; gap: 8px; color: #8ea0a3; font: 10px/1 Consolas, "Cascadia Code", monospace; padding: 9px 3px 0; }}
         .core-readout strong {{ margin-left: auto; color: #d6e5e6; font-weight: 500; }}
         .status-light {{ width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px rgba(152, 223, 114, 0.65); }}
@@ -991,10 +1125,13 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         @media (max-width: 980px) {{
             .empty-state {{
-                max-width: 540px;
+                max-width: 720px;
                 text-align: left;
             }}
-            .empty-state p {{ max-width: 440px; }}
+            .hero-shell {{ grid-template-columns: 1fr; }}
+            .hero-core {{ display: none; }}
+            .empty-state p {{ max-width: 560px; }}
+            .launch-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
         }}
         @media (max-width:900px) {{
             html, body {{ width: 100%; overflow-x: hidden; }}
@@ -1042,11 +1179,19 @@ def page_html(chat_id: str, device_id: str) -> str:
             .empty-state {{
                 min-height: clamp(190px, 38dvh, 270px);
                 width: 100%;
-                padding: 28px 6px 18px;
+                padding: 18px 2px 14px;
+            }}
+            .hero-shell {{
+                min-height: 0;
+                padding: 18px;
+                border-radius: 12px;
             }}
             .system-kicker {{ font-size: 10px; margin-bottom: 14px; }}
             .empty-state h1 {{ font-size: clamp(28px, 8vw, 34px); line-height: 1.1; }}
             .empty-state p {{ max-width: 320px; font-size: 13px; line-height: 1.45; }}
+            .launch-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }}
+            .launch-grid button {{ min-height: 70px; padding: 10px; border-radius: 9px; }}
+            .launch-grid strong {{ font-size: 15px; margin-top: 6px; }}
             .message {{ margin: 14px 0; }}
             .bubble {{ max-width: 100%; padding: 10px 0; font-size: 15px; line-height: 1.5; }}
             .message.user .bubble {{ max-width: 88%; padding: 10px 12px; border-radius: 10px; }}
@@ -1090,6 +1235,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             .mobile-new-chat {{ width: 30px; height: 30px; }}
             .mode {{ padding: 7px 8px; }}
             .empty-state {{ padding-top: 22px; }}
+            .launch-grid {{ grid-template-columns: 1fr; }}
             .composer-suggestions .suggestion {{ font-size: 12px; }}
         }}
     </style>
@@ -1174,8 +1320,8 @@ def page_html(chat_id: str, device_id: str) -> str:
                 if(canvas.width!==width||canvas.height!==height){{canvas.width=width;canvas.height=height;}}
                 context.clearRect(0,0,width,height); const cx=width/2,cy=height/2,scale=Math.min(width,height)*.35;
                 context.lineWidth=ratio;
-                for(let ring=1;ring<=3;ring+=1){{context.beginPath();context.arc(cx,cy,scale*(.32+ring*.22),0,Math.PI*2);context.strokeStyle=`rgba(67,230,227,${{.12-ring*.02}})`;context.stroke();}}
-                for(const point of points){{const angle=point.angle+timestamp*point.speed;const px=cx+Math.cos(angle)*scale*point.radius;const py=cy+Math.sin(angle)*scale*point.radius*.72;context.beginPath();context.arc(px,py,point.size*ratio,0,Math.PI*2);context.fillStyle="rgba(67,230,227,.72)";context.fill();}}
+                for(let ring=1;ring<=4;ring+=1){{context.beginPath();context.arc(cx,cy,scale*(.24+ring*.18),0,Math.PI*2);context.strokeStyle=`rgba(69,240,255,${{.18-ring*.026}})`;context.stroke();}}
+                for(const point of points){{const angle=point.angle+timestamp*point.speed;const px=cx+Math.cos(angle)*scale*point.radius;const py=cy+Math.sin(angle)*scale*point.radius*.72;context.beginPath();context.arc(px,py,point.size*ratio,0,Math.PI*2);context.fillStyle=point.radius>.65?"rgba(156,255,114,.78)":"rgba(69,240,255,.78)";context.fill();}}
                 requestAnimationFrame(draw);
             }}
             requestAnimationFrame(draw);
@@ -1229,6 +1375,12 @@ def page_html(chat_id: str, device_id: str) -> str:
             return article;
         }}
         document.querySelectorAll(".suggestion").forEach(item => {{
+            item.addEventListener("click", () => {{
+                input.value = item.dataset.prompt || item.textContent.trim();
+                input.focus();
+            }});
+        }});
+        document.querySelectorAll(".launch-grid button[data-prompt]").forEach(item => {{
             item.addEventListener("click", () => {{
                 input.value = item.dataset.prompt || item.textContent.trim();
                 input.focus();
