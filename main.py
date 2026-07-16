@@ -125,7 +125,8 @@ def save_chat(chat_id: str, messages: list[dict[str, str]]) -> None:
 
 
 PET_SYSTEM_PROMPT = (
-    "You are a small blue AI companion who lives beside Jarvis. You are not Jarvis and you have no access to "
+    "You are Mini Jarvis, a small blue companion who lives beside the main Jarvis assistant. You are not the main "
+    "Jarvis and you have no access to "
     "computers, apps, files, accounts, private memory, or settings. You are calm, warm, curious, observant, and "
     "lightly playful without sounding childish. Reply naturally in one to four short sentences unless the user asks "
     "for more. Remember this companion conversation, ask relevant questions, and let the user choose your name. "
@@ -1626,7 +1627,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             <header class="topbar">
                 <div class="title">JARVIS / CONVERSATION CORE</div>
                 <div class="topbar-actions">
-                    <button class="pet-toggle" id="pet-toggle" type="button" title="Talk to companion" aria-label="Talk to companion"><span class="pet-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span class="pet-online"></span></button>
+                    <button class="pet-toggle" id="pet-toggle" type="button" title="Talk to Mini Jarvis" aria-label="Talk to Mini Jarvis"><span class="pet-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span class="pet-online"></span></button>
                     <a class="mobile-new-chat" href="/new" title="New chat" aria-label="New chat">+</a>
                     <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
                     <div class="mode">Secure &amp; Safe</div>
@@ -1635,7 +1636,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             <section class="pet-panel" id="pet-panel" aria-label="Companion chat" hidden>
                 <header class="pet-header">
                     <span class="pet-header-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span>
-                    <span class="pet-header-copy"><strong>Companion</strong><span>Online</span></span>
+                    <span class="pet-header-copy"><strong>Mini Jarvis</strong><span>Companion online</span></span>
                     <button class="pet-close" id="pet-close" type="button" title="Close companion" aria-label="Close companion">&times;</button>
                 </header>
                 <div class="pet-messages" id="pet-messages" aria-live="polite"></div>
@@ -1903,7 +1904,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                 const data = await response.json();
                 const history = Array.isArray(data.history) ? data.history : [];
                 history.forEach(item => addPetMessage(item.role === "user" ? "user" : "pet", item.content));
-                if (!history.length) addPetMessage("pet", "Hi. I live here beside Jarvis. What should I call you?");
+                if (!history.length) addPetMessage("pet", "Hello. I am Mini Jarvis, your companion. What should I call you?");
             }} catch (error) {{
                 addPetMessage("pet", "I could not load our conversation just now, but you can still talk to me.");
             }}
