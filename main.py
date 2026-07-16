@@ -124,6 +124,29 @@ def save_chat(chat_id: str, messages: list[dict[str, str]]) -> None:
     write_json(chat_path(chat_id), messages[-200:])
 
 
+PET_SYSTEM_PROMPT = (
+    "You are a small blue AI companion who lives beside Jarvis. You are not Jarvis and you have no access to "
+    "computers, apps, files, accounts, private memory, or settings. You are calm, warm, curious, observant, and "
+    "lightly playful without sounding childish. Reply naturally in one to four short sentences unless the user asks "
+    "for more. Remember this companion conversation, ask relevant questions, and let the user choose your name. "
+    "Never claim to be conscious or to have taken an action outside this chat."
+)
+
+
+def pet_chat_path(chat_id: str) -> Path:
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id)
+    return DATA_DIR / f"pet_{safe_id}.json"
+
+
+def load_pet_chat(chat_id: str) -> list[dict[str, str]]:
+    data = read_json(pet_chat_path(chat_id), [])
+    return data if isinstance(data, list) else []
+
+
+def save_pet_chat(chat_id: str, messages: list[dict[str, str]]) -> None:
+    write_json(pet_chat_path(chat_id), messages[-120:])
+
+
 def chat_title(chat_id: str) -> str:
     for item in load_chat(chat_id):
         if item.get("role") == "user" and item.get("content", "").strip():
@@ -156,6 +179,7 @@ def cloud_generate(
     prompt: str,
     history: list[dict[str, str]] | None = None,
     mode: str = "conversation",
+    system_prompt: str | None = None,
 ) -> str | None:
     providers = available_cloud_providers()
     if not providers:
@@ -179,7 +203,7 @@ def cloud_generate(
     messages: list[dict[str, str]] = [
         {
             "role": "system",
-            "content": (
+            "content": system_prompt or (
                 "You are Jarvis.AI, a public cloud version of Jarvis. "
                 "You are not running on the owner's laptop, so you cannot open local apps, read local files, "
                 "control Windows, use local Ollama, or access private owner memory. "
@@ -195,7 +219,7 @@ def cloud_generate(
     ]
     if history:
         for item in history[-MAX_HISTORY_MESSAGES:]:
-            role = "assistant" if item.get("role") == "Jarvis" else "user"
+            role = "assistant" if item.get("role") in {"Jarvis", "Pet"} else "user"
             content = clean_text(item.get("content", ""))
             if content:
                 messages.append({"role": role, "content": content[:2500]})
@@ -225,6 +249,20 @@ def cloud_generate(
             print(f"[cloud brain warning] {provider}: {exc}")
             continue
     return None
+
+
+def pet_reply(user_text: str, chat_id: str) -> str:
+    text = clean_text(user_text)
+    if not text:
+        return "Say something to me first."
+    history = load_pet_chat(chat_id)
+    answer = cloud_generate(text, history=history[-16:], system_prompt=PET_SYSTEM_PROMPT)
+    if not answer:
+        answer = "My conversation brain is unavailable for a moment, but I am still here. Try that again shortly."
+    history.append({"role": "user", "content": text, "time": now_stamp()})
+    history.append({"role": "Pet", "content": answer, "time": now_stamp()})
+    save_pet_chat(chat_id, history)
+    return answer
 
 
 def ddgs_text_search(query: str) -> str:
@@ -624,7 +662,7 @@ def build_chat_history(chat_id: str) -> str:
         elif role == "Jarvis":
             html_out += (
                 '<article class="message jarvis">'
-                '<div class="avatar mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis"></div>'
+                '<div class="avatar">J</div>'
                 f'<div class="bubble">{content}</div></article>'
             )
     return html_out
@@ -658,7 +696,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <div class="core-ring ring-one"></div>
                     <div class="core-ring ring-two"></div>
                     <div class="core-ring ring-three"></div>
-                    <div class="core-hex mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis mascot"></div>
+                    <div class="core-hex">J</div>
                 </div>
             </section>
             <section class="activity-ledger" aria-label="Jarvis activity ledger">
@@ -1526,7 +1564,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             .activity-ledger {{ grid-template-columns: 1fr; }}
             .composer-suggestions .suggestion {{ font-size: 12px; }}
         }}
-        /* Jarvis mascot identity */
+        /* Separate talkable companion */
         .mascot-crop {{ position: relative; overflow: hidden; isolation: isolate; }}
         .mascot-crop > img {{
             position: absolute;
@@ -1539,49 +1577,29 @@ def page_html(chat_id: str, device_id: str) -> str:
             user-select: none;
             pointer-events: none;
         }}
-        .brand-mark {{ overflow: hidden; padding: 0; }}
-        .brand-mark > img {{ width: 235%; }}
-        .topbar-brand {{ display: flex !important; align-items: center; gap: 8px; }}
-        .topbar-mascot {{
-            width: 30px;
-            height: 30px;
-            flex: 0 0 30px;
-            border: 1px solid rgba(69, 240, 255, 0.28);
-            border-radius: 8px;
-            background: #111923;
-        }}
-        .topbar-mascot > img {{ width: 230%; }}
-        .message.jarvis {{ align-items: flex-start; gap: 12px; }}
-        .message.jarvis .avatar {{
-            width: 44px;
-            height: 44px;
-            flex: 0 0 44px;
-            border: 1px solid rgba(69, 240, 255, 0.28);
-            border-radius: 10px;
-            background: #111923;
-            box-shadow: 0 0 16px rgba(69, 240, 255, 0.10);
-        }}
-        .message.jarvis .avatar > img {{ width: 225%; }}
-        .core-hex.mascot-crop {{
-            width: 84px;
-            height: 84px;
-            border-radius: 18px;
-            clip-path: none;
-            overflow: hidden;
-            animation: mascot-idle 3.8s ease-in-out infinite;
-        }}
-        .core-hex.mascot-crop > img {{ width: 225%; }}
-        @keyframes mascot-idle {{
-            0%, 100% {{ transform: translateY(0); }}
-            50% {{ transform: translateY(-5px); }}
-        }}
-        @media (prefers-reduced-motion: reduce) {{
-            .core-hex.mascot-crop {{ animation: none; }}
-        }}
-        @media (max-width:760px) {{
-            .message.jarvis .avatar {{ width: 36px; height: 36px; flex-basis: 36px; border-radius: 8px; }}
-            .brand-mark {{ width: 30px; height: 30px; }}
-        }}
+        .pet-toggle {{ position: relative; width: 38px; height: 38px; flex: 0 0 38px; padding: 0; overflow: hidden; border: 1px solid #27658a; border-radius: 8px; background: #0b1724; cursor: pointer; box-shadow: 0 0 18px rgba(69, 240, 255, 0.12); }}
+        .pet-toggle:hover {{ border-color: var(--accent); }}
+        .pet-toggle .pet-face {{ position: absolute; inset: 0; }}
+        .pet-online {{ position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 8px rgba(156, 255, 114, 0.8); z-index: 2; }}
+        .pet-panel {{ position: fixed; z-index: 1200; top: 68px; right: 350px; width: 340px; height: min(500px, calc(100vh - 92px)); display: grid; grid-template-rows: 58px minmax(0, 1fr) 62px; border: 1px solid #28516d; border-radius: 8px; overflow: hidden; background: #07111d; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.52); }}
+        .pet-panel[hidden] {{ display: none; }}
+        .pet-header {{ display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--line); }}
+        .pet-header-face {{ width: 38px; height: 38px; flex: 0 0 38px; border-radius: 8px; background: #101b2a; }}
+        .pet-header-copy {{ min-width: 0; display: grid; gap: 2px; }}
+        .pet-header-copy strong {{ color: #effaff; font-size: 14px; }}
+        .pet-header-copy span {{ color: var(--signal); font: 10px/1 Consolas, monospace; text-transform: uppercase; }}
+        .pet-close {{ margin-left: auto; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; color: #9db0bb; cursor: pointer; font-size: 22px; }}
+        .pet-messages {{ min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }}
+        .pet-message {{ max-width: 86%; padding: 9px 11px; border-radius: 8px; line-height: 1.45; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }}
+        .pet-message.pet {{ align-self: flex-start; background: #0e2031; color: #e5f5ff; border: 1px solid #1f4058; }}
+        .pet-message.user {{ align-self: flex-end; background: #153246; color: #f4fbff; }}
+        .pet-form {{ display: flex; align-items: center; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }}
+        .pet-form input {{ min-width: 0; flex: 1; height: 40px; padding: 0 11px; border: 1px solid #27445a; border-radius: 6px; background: #050c13; color: #eef8ff; outline: none; }}
+        .pet-form input:focus {{ border-color: var(--accent); }}
+        .pet-form button {{ width: 40px; height: 40px; padding: 0; border: 0; border-radius: 6px; background: var(--accent); color: #031011; cursor: pointer; font-size: 18px; }}
+        .pet-form button:disabled {{ opacity: 0.5; cursor: wait; }}
+        @media (max-width:1240px) {{ .pet-panel {{ right: 16px; }} }}
+        @media (max-width:760px) {{ .pet-toggle {{ width: 34px; height: 34px; flex-basis: 34px; }} .pet-panel {{ top: 58px; right: 10px; left: 10px; width: auto; height: min(520px, calc(100vh - 76px)); }} }}
     </style>
 </head>
 <body class="guest-version">
@@ -1589,7 +1607,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         <aside class="sidebar">
             <div class="sidebar-topline">
                 <a class="brand-row" href="/">
-                    <span class="brand-mark mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span>
+                    <span class="brand-mark">J</span>
                     <span class="brand-name">{APP_TITLE}</span>
                 </a>
                 <span class="item-menu global-menu" aria-hidden="true"><span class="brand-menu">&#8942;</span></span>
@@ -1606,13 +1624,26 @@ def page_html(chat_id: str, device_id: str) -> str:
         </aside>
         <main class="main">
             <header class="topbar">
-                <div class="title topbar-brand"><span class="topbar-mascot mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span>JARVIS / CONVERSATION CORE</span></div>
+                <div class="title">JARVIS / CONVERSATION CORE</div>
                 <div class="topbar-actions">
+                    <button class="pet-toggle" id="pet-toggle" type="button" title="Talk to companion" aria-label="Talk to companion"><span class="pet-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span class="pet-online"></span></button>
                     <a class="mobile-new-chat" href="/new" title="New chat" aria-label="New chat">+</a>
                     <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
                     <div class="mode">Secure &amp; Safe</div>
                 </div>
             </header>
+            <section class="pet-panel" id="pet-panel" aria-label="Companion chat" hidden>
+                <header class="pet-header">
+                    <span class="pet-header-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span>
+                    <span class="pet-header-copy"><strong>Companion</strong><span>Online</span></span>
+                    <button class="pet-close" id="pet-close" type="button" title="Close companion" aria-label="Close companion">&times;</button>
+                </header>
+                <div class="pet-messages" id="pet-messages" aria-live="polite"></div>
+                <form class="pet-form" id="pet-form">
+                    <input id="pet-input" type="text" maxlength="800" placeholder="Talk to your companion..." autocomplete="off">
+                    <button id="pet-send" type="submit" title="Send" aria-label="Send">&#8593;</button>
+                </form>
+            </section>
             <section class="chat" id="chat">
                 <div class="chat-inner" id="messages">
                     {empty_state}
@@ -1641,6 +1672,13 @@ def page_html(chat_id: str, device_id: str) -> str:
         const suggestions = document.getElementById("composer-suggestions");
         const workspaceClose = document.getElementById("workspace-close");
         const workspaceOpen = document.getElementById("workspace-open");
+        const petToggle = document.getElementById("pet-toggle");
+        const petPanel = document.getElementById("pet-panel");
+        const petClose = document.getElementById("pet-close");
+        const petMessages = document.getElementById("pet-messages");
+        const petForm = document.getElementById("pet-form");
+        const petInput = document.getElementById("pet-input");
+        const petSend = document.getElementById("pet-send");
         const coreState = document.getElementById("core-state");
         const statusLight = document.getElementById("status-light");
         const latencyReadout = document.getElementById("latency-readout");
@@ -1652,6 +1690,8 @@ def page_html(chat_id: str, device_id: str) -> str:
         const engineeringExport = document.getElementById("engineering-export");
         let activityState = loadActivityState();
         let engineeringState = loadEngineeringState();
+        let petLoaded = false;
+        let petBusy = false;
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
         function setCoreState(label, busy = false) {{
@@ -1840,14 +1880,83 @@ def page_html(chat_id: str, device_id: str) -> str:
             if (suggestions) suggestions.remove();
             const article = document.createElement("article");
             article.className = "message " + (roleName === "user" ? "user" : "jarvis");
-            const avatar = roleName === "user"
-                ? ""
-                : `<div class="avatar mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis"></div>`;
+            const avatar = roleName === "user" ? "" : `<div class="avatar">J</div>`;
             article.innerHTML = avatar + `<div class="bubble">${{renderContent(content)}}</div>`;
             messages.appendChild(article);
             scrollDown();
             return article;
         }}
+        function addPetMessage(roleName, content) {{
+            if (!petMessages) return null;
+            const bubble = document.createElement("div");
+            bubble.className = "pet-message " + (roleName === "user" ? "user" : "pet");
+            bubble.textContent = String(content || "");
+            petMessages.appendChild(bubble);
+            petMessages.scrollTop = petMessages.scrollHeight;
+            return bubble;
+        }}
+        async function loadPetHistory() {{
+            if (petLoaded || !petMessages) return;
+            petLoaded = true;
+            try {{
+                const response = await fetch(`/api/pet/${{chatId}}`);
+                const data = await response.json();
+                const history = Array.isArray(data.history) ? data.history : [];
+                history.forEach(item => addPetMessage(item.role === "user" ? "user" : "pet", item.content));
+                if (!history.length) addPetMessage("pet", "Hi. I live here beside Jarvis. What should I call you?");
+            }} catch (error) {{
+                addPetMessage("pet", "I could not load our conversation just now, but you can still talk to me.");
+            }}
+        }}
+        async function openPetPanel() {{
+            if (!petPanel) return;
+            petPanel.hidden = false;
+            petToggle?.setAttribute("aria-expanded", "true");
+            await loadPetHistory();
+            petInput?.focus();
+        }}
+        function closePetPanel() {{
+            if (!petPanel) return;
+            petPanel.hidden = true;
+            petToggle?.setAttribute("aria-expanded", "false");
+            input.focus();
+        }}
+        async function sendPetMessage() {{
+            if (petBusy || !petInput) return;
+            const text = petInput.value.trim();
+            if (!text) return;
+            await loadPetHistory();
+            addPetMessage("user", text);
+            petInput.value = "";
+            petBusy = true;
+            if (petSend) petSend.disabled = true;
+            const placeholder = addPetMessage("pet", "Thinking...");
+            try {{
+                const response = await fetch(`/api/pet/${{chatId}}`, {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ message: text }})
+                }});
+                const data = await response.json();
+                if (placeholder) placeholder.textContent = data.answer || "I lost that thought. Try me again.";
+            }} catch (error) {{
+                if (placeholder) placeholder.textContent = "I could not reach my conversation brain. Try me again shortly.";
+            }} finally {{
+                petBusy = false;
+                if (petSend) petSend.disabled = false;
+                if (petMessages) petMessages.scrollTop = petMessages.scrollHeight;
+                petInput.focus();
+            }}
+        }}
+        if (petToggle) petToggle.addEventListener("click", () => petPanel?.hidden ? openPetPanel() : closePetPanel());
+        if (petClose) petClose.addEventListener("click", closePetPanel);
+        if (petForm) petForm.addEventListener("submit", event => {{ event.preventDefault(); sendPetMessage(); }});
+        document.addEventListener("keydown", event => {{
+            if (event.key === "Escape" && petPanel && !petPanel.hidden) {{
+                event.preventDefault();
+                closePetPanel();
+            }}
+        }});
         document.querySelectorAll(".suggestion").forEach(item => {{
             item.addEventListener("click", () => {{
                 input.value = item.dataset.prompt || item.textContent.trim();
@@ -2154,6 +2263,25 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     messages.append({"role": "Jarvis", "content": answer, "time": now_stamp()})
     save_chat(chat_id, messages)
     return JSONResponse({"answer": answer, "elapsed_ms": round((time.perf_counter() - started) * 1000)})
+
+
+@app.get("/api/pet/{chat_id}")
+def api_pet_history(chat_id: str, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    if chat_id not in get_device_chats(device_id) or not chat_path(chat_id).exists():
+        return JSONResponse({"history": []})
+    return JSONResponse({"history": load_pet_chat(chat_id)})
+
+
+@app.post("/api/pet/{chat_id}")
+def api_pet_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    if chat_id not in get_device_chats(device_id) or not chat_path(chat_id).exists():
+        return JSONResponse({"answer": "This conversation is no longer available."}, status_code=404)
+    text = clean_text(payload.message)
+    if not text:
+        return JSONResponse({"answer": "Say something to me first."})
+    return JSONResponse({"answer": pet_reply(text, chat_id)})
 
 
 if __name__ == "__main__":
