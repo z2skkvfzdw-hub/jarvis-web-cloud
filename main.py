@@ -14,6 +14,7 @@ from typing import Any
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 try:
@@ -26,13 +27,16 @@ APP_TITLE = "Jarvis.Ai"
 APP_VERSION = "1.4.1"
 CACHE_VERSION = "jarvis-ai-1-4-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
+ASSETS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
+app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 
 @app.middleware("http")
@@ -618,7 +622,11 @@ def build_chat_history(chat_id: str) -> str:
         if role == "user":
             html_out += f'<article class="message user"><div class="bubble">{content}</div></article>'
         elif role == "Jarvis":
-            html_out += f'<article class="message jarvis"><div class="bubble">{content}</div></article>'
+            html_out += (
+                '<article class="message jarvis">'
+                '<div class="avatar mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis"></div>'
+                f'<div class="bubble">{content}</div></article>'
+            )
     return html_out
 
 
@@ -650,7 +658,7 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <div class="core-ring ring-one"></div>
                     <div class="core-ring ring-two"></div>
                     <div class="core-ring ring-three"></div>
-                    <div class="core-hex">J</div>
+                    <div class="core-hex mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis mascot"></div>
                 </div>
             </section>
             <section class="activity-ledger" aria-label="Jarvis activity ledger">
@@ -1518,6 +1526,62 @@ def page_html(chat_id: str, device_id: str) -> str:
             .activity-ledger {{ grid-template-columns: 1fr; }}
             .composer-suggestions .suggestion {{ font-size: 12px; }}
         }}
+        /* Jarvis mascot identity */
+        .mascot-crop {{ position: relative; overflow: hidden; isolation: isolate; }}
+        .mascot-crop > img {{
+            position: absolute;
+            left: 50%;
+            top: 100%;
+            width: 220%;
+            max-width: none;
+            height: auto;
+            transform: translate(-50%, -50%);
+            user-select: none;
+            pointer-events: none;
+        }}
+        .brand-mark {{ overflow: hidden; padding: 0; }}
+        .brand-mark > img {{ width: 235%; }}
+        .topbar-brand {{ display: flex !important; align-items: center; gap: 8px; }}
+        .topbar-mascot {{
+            width: 30px;
+            height: 30px;
+            flex: 0 0 30px;
+            border: 1px solid rgba(69, 240, 255, 0.28);
+            border-radius: 8px;
+            background: #111923;
+        }}
+        .topbar-mascot > img {{ width: 230%; }}
+        .message.jarvis {{ align-items: flex-start; gap: 12px; }}
+        .message.jarvis .avatar {{
+            width: 44px;
+            height: 44px;
+            flex: 0 0 44px;
+            border: 1px solid rgba(69, 240, 255, 0.28);
+            border-radius: 10px;
+            background: #111923;
+            box-shadow: 0 0 16px rgba(69, 240, 255, 0.10);
+        }}
+        .message.jarvis .avatar > img {{ width: 225%; }}
+        .core-hex.mascot-crop {{
+            width: 84px;
+            height: 84px;
+            border-radius: 18px;
+            clip-path: none;
+            overflow: hidden;
+            animation: mascot-idle 3.8s ease-in-out infinite;
+        }}
+        .core-hex.mascot-crop > img {{ width: 225%; }}
+        @keyframes mascot-idle {{
+            0%, 100% {{ transform: translateY(0); }}
+            50% {{ transform: translateY(-5px); }}
+        }}
+        @media (prefers-reduced-motion: reduce) {{
+            .core-hex.mascot-crop {{ animation: none; }}
+        }}
+        @media (max-width:760px) {{
+            .message.jarvis .avatar {{ width: 36px; height: 36px; flex-basis: 36px; border-radius: 8px; }}
+            .brand-mark {{ width: 30px; height: 30px; }}
+        }}
     </style>
 </head>
 <body class="guest-version">
@@ -1525,7 +1589,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         <aside class="sidebar">
             <div class="sidebar-topline">
                 <a class="brand-row" href="/">
-                    <span class="brand-mark">J</span>
+                    <span class="brand-mark mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span>
                     <span class="brand-name">{APP_TITLE}</span>
                 </a>
                 <span class="item-menu global-menu" aria-hidden="true"><span class="brand-menu">&#8942;</span></span>
@@ -1542,7 +1606,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         </aside>
         <main class="main">
             <header class="topbar">
-                <div class="title">JARVIS / CONVERSATION CORE</div>
+                <div class="title topbar-brand"><span class="topbar-mascot mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span>JARVIS / CONVERSATION CORE</span></div>
                 <div class="topbar-actions">
                     <a class="mobile-new-chat" href="/new" title="New chat" aria-label="New chat">+</a>
                     <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
@@ -1776,7 +1840,10 @@ def page_html(chat_id: str, device_id: str) -> str:
             if (suggestions) suggestions.remove();
             const article = document.createElement("article");
             article.className = "message " + (roleName === "user" ? "user" : "jarvis");
-            article.innerHTML = `<div class="bubble">${{renderContent(content)}}</div>`;
+            const avatar = roleName === "user"
+                ? ""
+                : `<div class="avatar mascot-crop"><img src="/assets/jarvis-mascot.png" alt="Jarvis"></div>`;
+            article.innerHTML = avatar + `<div class="bubble">${{renderContent(content)}}</div>`;
             messages.appendChild(article);
             scrollDown();
             return article;
