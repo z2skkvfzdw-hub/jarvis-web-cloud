@@ -1,66 +1,46 @@
-# Jarvis.AI Cloud Deploy
+# Jarvis.AI Cloud App
 
-This folder is the clean cloud-hosted version of Jarvis.
-
-Live app:
+This folder contains the canonical public Jarvis web app. The live address is:
 
 ```text
 https://jarvis-web-cloud.onrender.com
 ```
 
-It can run on Render, Railway, Fly.io, Koyeb, Hugging Face Spaces, or any host that supports FastAPI.
-
-## Render Settings
-
-Build command:
+From the repository root, start it with:
 
 ```text
-pip install -r requirements.txt
+py -3.11 -m uvicorn cloud_deploy.main:app --host 127.0.0.1 --port 8020
 ```
 
-Start command:
+If `cloud_deploy` is used as the service root directory, use:
 
 ```text
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-Environment variables:
+Render needs these environment variables:
 
 ```text
-OPENROUTER_API_KEY=your_key_here
-JARVIS_OPENROUTER_MODEL=tencent/hy3:free
+GROQ_API_KEY=<secret Groq key>
+JARVIS_CLOUD_PROVIDER=groq
+JARVIS_GROQ_MODEL=llama-3.3-70b-versatile
+JARVIS_SESSION_SECRET=<long random secret>
+JARVIS_PUBLIC_ORIGIN=https://jarvis-web-cloud.onrender.com
+DATABASE_URL=<private PostgreSQL connection string>
 ```
 
-## Network Support
+`OPENROUTER_API_KEY` and `JARVIS_OPENROUTER_MODEL=openrouter/free` are optional
+fallback settings. Never commit secret values. Without `DATABASE_URL`, Render's
+temporary filesystem can lose chat history after a restart or redeploy.
 
-Jarvis.AI now includes:
+## Public capabilities
 
-- Installable web app manifest
-- App icon
-- Service worker
-- Offline shell page
-- `/health` status check
-- `/status` diagnostics check
-- Backup deploy files for Railway and Fly.io
+- Anonymous, browser-owned chat history
+- Six chat modes backed by Groq, with optional OpenRouter fallback
+- Web and image search commands
+- Mobile chat navigation and installable PWA shell
+- Signed sessions, rate limits, security headers, and privacy controls
+- PostgreSQL persistence when `DATABASE_URL` is configured
 
-This makes Jarvis easier to open from phones, tablets, and other networks. It does not bypass blocked networks. If a network blocks Render or the Jarvis domain, use a different allowed host/domain or ask the network owner to whitelist it.
-
-More notes are in `NETWORK_DEPLOY.md`.
-
-## What This Cloud Version Can Do
-
-- Chat naturally
-- Search with `search: topic`
-- Show image ideas with `image: topic`
-- Save separate chat history per device
-- Work without the owner's laptop being on
-- Be added to a phone or tablet home screen
-
-## What This Cloud Version Cannot Do
-
-- Open apps on your laptop
-- Read your local laptop files
-- Run terminal commands on your laptop
-- Use local Ollama
-- Access private desktop Jarvis memory
-- Control a computer that is off
+This build deliberately has no access to desktop files, apps, commands, Ollama,
+or private Jarvis memory.

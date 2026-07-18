@@ -1,21 +1,32 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import html
 import json
+import logging
 import os
 import re
+import secrets
+import threading
 import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+try:
+    from .cloud_store import build_store, canonical_id
+except ImportError:  # Running from cloud_deploy as the working directory.
+    from cloud_store import build_store, canonical_id
 
 try:
     from ddgs import DDGS
@@ -24,8 +35,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.4.1"
-CACHE_VERSION = "jarvis-ai-1-4-1"
+APP_VERSION = "1.5.0"
+CACHE_VERSION = "jarvis-ai-1-5-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -33,7 +44,61 @@ ASSETS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
+ChatMode = Literal["chat", "study", "code", "research", "create", "engineer"]
+CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "code", "research", "create", "engineer")
+MODE_INSTRUCTIONS: dict[ChatMode, str] = {
+    "chat": (
+        " Prioritize natural back-and-forth conversation. Be personable, direct, and curious without turning every "
+        "reply into a checklist. Match the user's level of detail and keep continuity with the conversation."
+    ),
+    "study": (
+        " Act as a patient tutor. Explain ideas in clear stages, adapt to the learner's apparent level, use a small "
+        "example when useful, and check understanding without withholding the answer. For practice requests, guide "
+        "the learner before revealing a complete solution."
+    ),
+    "code": (
+        " Act as a senior software engineer. Give runnable, focused code when appropriate, state important assumptions, "
+        "explain likely failure points, and include a practical verification step. Never claim code was executed unless "
+        "an execution result was provided."
+    ),
+    "research": (
+        " Act as a careful research assistant. Ground claims in the supplied search material, distinguish sourced facts "
+        "from inference, preserve useful source URLs, call out uncertainty, and synthesize instead of merely listing results."
+    ),
+    "create": (
+        " Act as a creative collaborator for writing and ideation. Offer specific, distinctive work that follows the "
+        "requested tone and constraints. Prefer a strong draft or concrete options over generic creative advice."
+    ),
+    "engineer": (
+        " Act as the Jarvis Engineering Agent. Treat the conversation as one continuing physical-design project. "
+        "Translate the user's intent into an achievable mechanical concept. Work in metric units. Separate known facts "
+        "from assumptions. Never invent dimensions, loads, clearances, or completed CAD. If essential information is "
+        "missing, ask no more than three precise measurement questions and explain what each controls. Once enough "
+        "information is available, provide the design objective, constraints, chosen concept and why, critical dimensions "
+        "and tolerances, materials and hardware, CAD construction sequence, prototype steps, failure risks, and validation "
+        "checks. For safety-sensitive parts, preserve protective function and call out safety-critical tests. End with one "
+        "clear next action. Do not claim that a part was fabricated, scanned, simulated, or tested without a supplied result."
+    ),
+}
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
+MAX_MESSAGE_CHARS = max(200, int(os.environ.get("JARVIS_MAX_MESSAGE_CHARS", "8000")))
+RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("JARVIS_RATE_LIMIT_REQUESTS", "30")))
+RATE_LIMIT_SECONDS = max(10, int(os.environ.get("JARVIS_RATE_LIMIT_SECONDS", "600")))
+DEVICE_COOKIE = "jarvis_cloud_device"
+DEVICE_COOKIE_MAX_AGE = max(3600, int(os.environ.get("JARVIS_SESSION_MAX_AGE", str(60 * 60 * 24 * 30))))
+SESSION_SECRET_CONFIGURED = bool(os.environ.get("JARVIS_SESSION_SECRET", "").strip())
+SESSION_SECRET = (
+    os.environ.get("JARVIS_SESSION_SECRET", "").strip() or secrets.token_urlsafe(48)
+).encode("utf-8")
+PUBLIC_ORIGIN = os.environ.get("JARVIS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+STORE = build_store(DATA_DIR)
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+LOGGER = logging.getLogger("jarvis.cloud")
+if not SESSION_SECRET_CONFIGURED:
+    LOGGER.warning("JARVIS_SESSION_SECRET is not configured; sessions will reset when this process restarts")
+if not STORE.persistent:
+    LOGGER.warning("Persistent cloud storage is not configured; set DATABASE_URL before public use")
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
@@ -41,19 +106,60 @@ app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 @app.middleware("http")
 async def add_web_headers(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin", "").rstrip("/")
+        expected_origin = PUBLIC_ORIGIN or request_origin(request)
+        if origin and origin != expected_origin:
+            return JSONResponse({"detail": "Cross-origin request blocked."}, status_code=403)
+        content_length = request.headers.get("content-length", "")
+        if content_length.isdigit() and int(content_length) > MAX_MESSAGE_CHARS * 2:
+            return JSONResponse({"detail": "Request is too large."}, status_code=413)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "geolocation=()")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     if request.url.path == "/sw.js":
         response.headers["Cache-Control"] = "no-cache"
     elif request.url.path in {"/manifest.json", "/icon.svg", "/offline"}:
         response.headers["Cache-Control"] = "public, max-age=3600"
+    elif request.url.path.startswith(("/chat/", "/api/")) or request.url.path == "/":
+        response.headers["Cache-Control"] = "private, no-store"
     return response
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    mode: ChatMode = "chat"
+
+
+class SlidingRateLimiter:
+    def __init__(self, requests: int, seconds: int) -> None:
+        self.requests = requests
+        self.seconds = seconds
+        self._events: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> tuple[bool, int]:
+        now = time.monotonic()
+        cutoff = now - self.seconds
+        with self._lock:
+            events = self._events[key]
+            while events and events[0] <= cutoff:
+                events.popleft()
+            if len(events) >= self.requests:
+                retry_after = max(1, int(self.seconds - (now - events[0])))
+                return False, retry_after
+            events.append(now)
+            if len(self._events) > 5000:
+                self._events = defaultdict(deque, {item: values for item, values in self._events.items() if values})
+            return True, 0
+
+
+CHAT_RATE_LIMITER = SlidingRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_SECONDS)
 
 
 def now_stamp() -> str:
@@ -67,61 +173,108 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def device_id_from_request(request: Request) -> str:
-    current = request.cookies.get("jarvis_cloud_device", "").strip()
-    if re.fullmatch(r"[a-f0-9-]{20,80}", current, flags=re.IGNORECASE):
-        return current
-    return str(uuid.uuid4())
+def request_origin(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    scheme = forwarded or request.url.scheme
+    host = request.headers.get("host", request.url.netloc)
+    return f"{scheme}://{host}".rstrip("/")
 
 
-def device_index_path(device_id: str) -> Path:
-    return DATA_DIR / f"device_{device_id}.json"
+def _signature(value: str) -> str:
+    digest = hmac.new(SESSION_SECRET, value.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def chat_path(chat_id: str) -> Path:
-    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id)
-    return DATA_DIR / f"chat_{safe_id}.json"
+def signed_device_cookie(device_id: str) -> str:
+    device_id = canonical_id(device_id) or ""
+    if not device_id:
+        raise ValueError("Invalid device identifier")
+    issued_at = str(int(time.time()))
+    signed_value = f"{device_id}.{issued_at}"
+    return f"{signed_value}.{_signature(signed_value)}"
 
 
-def read_json(path: Path, default: Any) -> Any:
+def verified_device_cookie(value: str) -> str | None:
     try:
-        if not path.exists():
-            return default
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return default
+        device_id, issued_at, signature = value.rsplit(".", 2)
+    except ValueError:
+        return None
+    device_id = canonical_id(device_id)
+    signed_value = f"{device_id}.{issued_at}"
+    if not device_id or not hmac.compare_digest(signature, _signature(signed_value)):
+        return None
+    try:
+        issued_timestamp = int(issued_at)
+    except ValueError:
+        return None
+    age = int(time.time()) - issued_timestamp
+    if age < -300 or age > DEVICE_COOKIE_MAX_AGE:
+        return None
+    return device_id
 
 
-def write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+def device_id_from_request(request: Request) -> str:
+    current = request.cookies.get(DEVICE_COOKIE, "").strip()
+    return verified_device_cookie(current) or str(uuid.uuid4())
+
+
+def set_device_cookie(response: Response, request: Request, device_id: str) -> None:
+    secure = request_origin(request).startswith("https://")
+    response.set_cookie(
+        DEVICE_COOKIE,
+        signed_device_cookie(device_id),
+        max_age=DEVICE_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+    )
+
+
+def client_rate_key(request: Request, device_id: str) -> str:
+    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "").split(",", 1)[0]
+    client = forwarded.strip() or (request.client.host if request.client else "unknown")
+    return hashlib.sha256(f"{client}:{device_id}".encode("utf-8")).hexdigest()
+
+
+def rate_limit_response(request: Request, device_id: str) -> JSONResponse | None:
+    allowed, retry_after = CHAT_RATE_LIMITER.allow(client_rate_key(request, device_id))
+    if allowed:
+        return None
+    response = JSONResponse(
+        {"detail": "Too many requests. Please wait before sending another message."},
+        status_code=429,
+    )
+    response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 def get_device_chats(device_id: str) -> list[str]:
-    data = read_json(device_index_path(device_id), [])
-    return [str(item) for item in data if isinstance(item, str)]
+    return STORE.get_device_chats(device_id)
 
 
 def save_device_chat(device_id: str, chat_id: str) -> None:
-    chats = get_device_chats(device_id)
-    if chat_id not in chats:
-        chats.append(chat_id)
-        write_json(device_index_path(device_id), chats[-80:])
+    STORE.add_device_chat(device_id, chat_id)
 
 
 def create_chat(device_id: str) -> str:
-    chat_id = str(uuid.uuid4())
-    save_chat(chat_id, [])
-    save_device_chat(device_id, chat_id)
-    return chat_id
+    return STORE.create_chat(device_id)
 
 
 def load_chat(chat_id: str) -> list[dict[str, str]]:
-    data = read_json(chat_path(chat_id), [])
-    return data if isinstance(data, list) else []
+    return STORE.load_chat(chat_id, "main")
 
 
 def save_chat(chat_id: str, messages: list[dict[str, str]]) -> None:
-    write_json(chat_path(chat_id), messages[-200:])
+    STORE.save_chat(chat_id, messages, "main")
+
+
+def saved_chat_mode(chat_id: str) -> ChatMode:
+    for item in reversed(load_chat(chat_id)):
+        mode = str(item.get("mode", "")).strip().lower()
+        for candidate in CHAT_MODES:
+            if mode == candidate:
+                return candidate
+    return "chat"
 
 
 PET_SYSTEM_PROMPT = (
@@ -134,18 +287,12 @@ PET_SYSTEM_PROMPT = (
 )
 
 
-def pet_chat_path(chat_id: str) -> Path:
-    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", chat_id)
-    return DATA_DIR / f"pet_{safe_id}.json"
-
-
 def load_pet_chat(chat_id: str) -> list[dict[str, str]]:
-    data = read_json(pet_chat_path(chat_id), [])
-    return data if isinstance(data, list) else []
+    return STORE.load_chat(chat_id, "pet")
 
 
 def save_pet_chat(chat_id: str, messages: list[dict[str, str]]) -> None:
-    write_json(pet_chat_path(chat_id), messages[-120:])
+    STORE.save_chat(chat_id, messages, "pet")
 
 
 def chat_title(chat_id: str) -> str:
@@ -159,47 +306,45 @@ def chat_title(chat_id: str) -> str:
 def list_chats(device_id: str) -> list[tuple[str, str]]:
     chats = []
     for chat_id in get_device_chats(device_id):
-        if chat_path(chat_id).exists():
+        if STORE.owns_chat(device_id, chat_id):
             chats.append((chat_id, chat_title(chat_id)))
     return chats
 
 
 def cloud_key(provider: str) -> str:
-    return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
+    if provider == "openrouter":
+        return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
+    if provider == "groq":
+        return os.environ.get("GROQ_API_KEY", "") or os.environ.get("JARVIS_GROQ_API_KEY", "")
+    return ""
 
 
 def available_cloud_providers() -> list[str]:
-    return ["openrouter"] if cloud_key("openrouter") else []
+    providers = [provider for provider in ("openrouter", "groq") if cloud_key(provider)]
+    preferred = os.environ.get("JARVIS_CLOUD_PROVIDER", "").strip().lower()
+    if preferred in providers:
+        providers.remove(preferred)
+        providers.insert(0, preferred)
+    return providers
 
 
 def provider_model(provider: str) -> str:
-    return os.environ.get("JARVIS_OPENROUTER_MODEL", "").strip() or DEFAULT_MODEL or "tencent/hy3:free"
+    if provider == "groq":
+        return os.environ.get("JARVIS_GROQ_MODEL", "").strip() or "llama-3.3-70b-versatile"
+    return os.environ.get("JARVIS_OPENROUTER_MODEL", "").strip() or DEFAULT_MODEL or "openrouter/free"
 
 
 def cloud_generate(
     prompt: str,
     history: list[dict[str, str]] | None = None,
-    mode: str = "conversation",
+    mode: ChatMode = "chat",
     system_prompt: str | None = None,
 ) -> str | None:
     providers = available_cloud_providers()
     if not providers:
         return None
 
-    specialist_prompt = ""
-    if mode == "engineering":
-        specialist_prompt = (
-            " You are now the Jarvis Engineering Agent. Treat the conversation as one continuing physical-design "
-            "project. Translate the user's intent into an achievable mechanical concept. Work in metric units. "
-            "Separate known facts from assumptions. Never invent dimensions, loads, clearances, or completed CAD. "
-            "If essential information is missing, ask no more than three precise measurement questions and explain "
-            "what each controls. Once enough information is available, provide: design objective, constraints, chosen "
-            "concept and why, critical dimensions and tolerances, materials and hardware, CAD construction sequence, "
-            "prototype steps, failure risks, and validation checks. For helmets, wearables, structural parts, batteries, "
-            "motors, or moving mechanisms, preserve protective function and call out safety-critical tests. End with one "
-            "clear next action. Do not claim that a part was fabricated, scanned, simulated, or tested unless the user "
-            "provided the result."
-        )
+    mode_prompt = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["chat"])
 
     messages: list[dict[str, str]] = [
         {
@@ -214,7 +359,7 @@ def cloud_generate(
                 "constraints, alternatives, risks, and test criteria, then present only the conclusion and useful reasoning. "
                 "Never reveal chain-of-thought. Sound calm, intelligent, candid, and natural. Avoid canned acknowledgements "
                 "and unnecessary follow-up questions. Do not pretend to have device control."
-                + specialist_prompt
+                + mode_prompt
             ),
         }
     ]
@@ -230,15 +375,34 @@ def cloud_generate(
         model = provider_model(provider)
         key = cloud_key(provider)
         try:
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
+            if provider == "groq":
+                endpoint = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.5,
+                    "max_completion_tokens": 1200,
+                }
+            else:
+                endpoint = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": os.environ.get("JARVIS_OPENROUTER_REFERER", "https://jarvis.web"),
                     "X-OpenRouter-Title": APP_TITLE,
-                },
-                json={"model": model, "messages": messages, "reasoning": {"enabled": True}, "temperature": 0.5, "max_tokens": 1200},
+                }
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "reasoning": {"enabled": True},
+                    "temperature": 0.5,
+                    "max_tokens": 1200,
+                }
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
                 timeout=35,
             )
             response.raise_for_status()
@@ -247,7 +411,7 @@ def cloud_generate(
             if answer:
                 return answer
         except Exception as exc:
-            print(f"[cloud brain warning] {provider}: {exc}")
+            LOGGER.warning("Cloud brain request failed for %s: %s", provider, type(exc).__name__)
             continue
     return None
 
@@ -574,7 +738,7 @@ def engineering_fallback(text: str) -> str:
     )
 
 
-def jarvis_reply(user_text: str, chat_id: str) -> str:
+def jarvis_reply(user_text: str, chat_id: str, mode: ChatMode = "chat") -> str:
     text = clean_text(user_text)
     lowered = text.lower()
     history = load_chat(chat_id)
@@ -595,6 +759,7 @@ def jarvis_reply(user_text: str, chat_id: str) -> str:
             "Use these search results to answer clearly. Keep it concise.\n\n"
             f"Question: {query}\n\n{search_results}",
             history,
+            mode=mode,
         )
         return brain or search_results
 
@@ -607,11 +772,23 @@ def jarvis_reply(user_text: str, chat_id: str) -> str:
             "This cloud version can chat, search, tutor, and brainstorm, but it cannot control a laptop that is off."
         )
 
-    if engineering_context(text, history):
-        reply = cloud_generate(text, history, mode="engineering")
+    if mode == "research":
+        search_results = ddgs_text_search(text)
+        if "No search results found" not in search_results and "Search failed" not in search_results:
+            reply = cloud_generate(
+                "Answer the research question using the supplied web results. Include the most useful source URLs and "
+                "say when a conclusion is an inference.\n\n"
+                f"Research question: {text}\n\nWeb results:\n{search_results}",
+                history,
+                mode="research",
+            )
+            return reply or search_results
+
+    if mode == "engineer":
+        reply = cloud_generate(text, history, mode="engineer")
         return reply or engineering_fallback(text)
 
-    reply = cloud_generate(text, history)
+    reply = cloud_generate(text, history, mode=mode)
     if reply:
         return reply
 
@@ -673,77 +850,57 @@ def build_sidebar(current_chat_id: str, device_id: str) -> str:
     rows = []
     for chat_id, title in reversed(list_chats(device_id)[-50:]):
         active = " active" if chat_id == current_chat_id else ""
+        safe_title = html.escape(title)
         rows.append(
-            f'<div class="chat-row{active}">'
-            f'<a class="chat-title" href="/chat/{chat_id}" title="{html.escape(title)}">{html.escape(title)}</a>'
+            f'<div class="chat-row{active}" data-chat-row data-title="{safe_title.casefold()}">'
+            f'<a class="chat-title" href="/chat/{chat_id}" title="{safe_title}">{safe_title}</a>'
+            f'<button class="chat-delete" type="button" data-delete-chat="{chat_id}" title="Delete chat" aria-label="Delete chat">&times;</button>'
             "</div>"
         )
     return "\n".join(rows)
 
 
-def page_html(chat_id: str, device_id: str) -> str:
+def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
+    providers = available_cloud_providers()
+    brain_ready = bool(providers)
+    brain_state = "ONLINE" if brain_ready else "SETUP REQUIRED"
+    brain_label = "Cloud brain online" if brain_ready else "Cloud brain unavailable"
+    history = load_chat(chat_id)
+    active_mode = saved_chat_mode(chat_id)
+    mode_options = (
+        ("chat", "message-circle", "Chat"),
+        ("study", "graduation-cap", "Study"),
+        ("code", "code-2", "Code"),
+        ("research", "search", "Research"),
+        ("create", "sparkles", "Create"),
+        ("engineer", "ruler", "Engineer"),
+    )
+    mode_switch = "".join(
+        f'<button class="mode-option{" active" if key == active_mode else ""}" type="button" '
+        f'data-chat-mode="{key}" aria-pressed="{"true" if key == active_mode else "false"}">'
+        f'<span data-lucide="{icon}"></span><span>{label}</span></button>'
+        for key, icon, label in mode_options
+    )
     history_html = build_chat_history(chat_id)
     empty_state = ""
-    if not load_chat(chat_id):
-        empty_state = """
+    if not history:
+        empty_state = f"""
         <div class="empty-state" id="empty-state">
-            <section class="hero-shell" aria-label="Jarvis command centre">
-                <div class="hero-copy">
-                    <div class="system-kicker"><span></span> JARVIS WEB INTERFACE ONLINE</div>
-                    <h1>What shall we build?</h1>
-                    <p>Describe a site, study task, research problem, image idea, or plan. Jarvis will route it through the cloud-safe workspace.</p>
-                </div>
-                <div class="hero-core" aria-hidden="true">
-                    <div class="core-ring ring-one"></div>
-                    <div class="core-ring ring-two"></div>
-                    <div class="core-ring ring-three"></div>
-                    <div class="core-hex">J</div>
-                </div>
-            </section>
-            <section class="activity-ledger" aria-label="Jarvis activity ledger">
-                <button class="ledger-card primary mj-open-card" data-open-mj type="button">
-                    <span>Companion</span>
-                    <strong>Talk to MJ</strong>
-                    <small>Open Mini Jarvis</small>
-                </button>
-                <div class="ledger-card">
-                    <span>Runs</span>
-                    <strong data-activity-metric="runs">0</strong>
-                    <small>responses completed</small>
-                </div>
-                <div class="ledger-card">
-                    <span>Average</span>
-                    <strong data-activity-metric="average">--</strong>
-                    <small>thinking time</small>
-                </div>
-                <div class="ledger-card activity">
-                    <span>Activity</span>
-                    <div class="mini-bars" data-activity-bars></div>
-                    <small data-activity-metric="last">waiting</small>
-                </div>
-            </section>
-            <section class="launch-grid" aria-label="Quick launch prompts">
-                <button data-prompt="Build a modern web page for " type="button"><span>Build</span><strong>Website</strong></button>
-                <button data-prompt="Engineer a physical part for " type="button"><span>Engineer</span><strong>Hardware</strong></button>
-                <button data-prompt="Research and summarise " type="button"><span>Research</span><strong>Brief</strong></button>
-                <button data-prompt="Create study notes for " type="button"><span>Study</span><strong>Lesson</strong></button>
-                <button data-prompt="Show image ideas for " type="button"><span>Visual</span><strong>Ideas</strong></button>
-                <button data-prompt="Plan this project: " type="button"><span>Plan</span><strong>Project</strong></button>
+            <section class="chat-welcome" aria-label="Start a conversation with Jarvis">
+                <div class="conversation-kicker"><span></span> AI {brain_state}</div>
+                <h1>Talk to Jarvis</h1>
+                <p>Choose a mode, then ask a question or start a conversation.</p>
             </section>
         </div>
         """
-    suggestions = "" if load_chat(chat_id) else """
+    suggestions = """
     <div class="suggestions composer-suggestions" id="composer-suggestions">
-        <button class="suggestion" data-prompt="Find " type="button"><span data-lucide="search"></span>Find</button>
-        <button class="suggestion" data-prompt="Think through " type="button"><span data-lucide="brain-circuit"></span>Think</button>
-        <button class="suggestion" data-prompt="Engineer a physical part for " type="button"><span data-lucide="ruler"></span>Engineer</button>
-        <button class="suggestion" data-prompt="Show visual ideas for " type="button"><span data-lucide="image"></span>Visuals</button>
-        <button class="suggestion" data-prompt="Help me study " type="button"><span data-lucide="book-open"></span>Study</button>
+        <button class="suggestion" data-mode-starter="0" type="button"></button>
+        <button class="suggestion" data-mode-starter="1" type="button"></button>
+        <button class="suggestion" data-mode-starter="2" type="button"></button>
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
-    providers = available_cloud_providers()
-    brain_label = provider_model(providers[0]) if providers else "Not configured"
     workspace_panel = f"""
         <aside class="workspace-panel" aria-label="Prototype workspace">
             <header class="workspace-header">
@@ -760,12 +917,12 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <canvas id="jarvis-core" width="640" height="360" aria-label="Animated Jarvis reasoning core"></canvas>
                     <div class="core-readout">
                         <span class="status-light" id="status-light"></span>
-                        <span id="core-state">READY</span>
+                        <span id="core-state">{brain_state}</span>
                         <strong id="latency-readout">--</strong>
                     </div>
                 </section>
                 <section class="workspace-section engineering-card">
-                    <div class="section-heading"><span class="eyebrow">Engineering agent</span><span id="engineering-status">READY</span></div>
+                    <div class="section-heading"><span class="eyebrow">Engineering agent</span><span id="engineering-status">{brain_state}</span></div>
                     <canvas id="engineering-preview" width="560" height="260" aria-label="Parametric mount engineering preview"></canvas>
                     <h3 id="engineering-project">Awaiting a physical design</h3>
                     <p id="engineering-next">Describe the part, what it attaches to, and what it must carry. Jarvis will ask for only the measurements that control the design.</p>
@@ -819,6 +976,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             </div>
         </aside>
     """
+    workspace_panel = ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -829,8 +987,8 @@ def page_html(chat_id: str, device_id: str) -> str:
     <meta name="apple-mobile-web-app-title" content="Jarvis">
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
+    <script nonce="{html.escape(csp_nonce)}" src="https://unpkg.com/lucide@latest"></script>
+    <style nonce="{html.escape(csp_nonce)}">
         * {{ box-sizing: border-box; }}
         body {{
             margin: 0;
@@ -898,17 +1056,30 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         .item-menu > summary::-webkit-details-marker {{ display: none; }}
         .sidebar-nav {{ display: grid; gap: 4px; margin: 26px 0 28px; }}
+        .sidebar-nav form {{ margin: 0; }}
         .nav-item {{
             height: 44px;
+            width: 100%;
             display: flex;
             align-items: center;
             gap: 12px;
             padding: 0 12px;
+            border: 0;
             border-radius: 12px;
+            background: transparent;
             color: #ececec;
             text-decoration: none;
             font-size: 15px;
+            font-family: inherit;
+            text-align: left;
+            cursor: pointer;
         }}
+        .nav-item.danger {{ color: #ffb4b4; }}
+        .privacy-state {{ color: #8fa9b8; font-size: 11px; }}
+        .chat-search {{ display: block; padding: 0 6px 14px; }}
+        .chat-search[hidden] {{ display: none; }}
+        .chat-search input {{ width: 100%; height: 38px; border: 1px solid #245a82; border-radius: 7px; background: #07111d; color: #eef8ff; padding: 0 10px; }}
+        .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
         .nav-icon {{
             width: 24px;
             display: inline-flex;
@@ -925,13 +1096,17 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         .chat-row {{
             min-height: 38px;
+            display: flex;
+            align-items: center;
             border-radius: 11px;
-            padding: 0 12px;
+            padding: 0 4px 0 12px;
             margin: 1px 0;
         }}
         .chat-row.active {{ background: #1f1f1f; }}
         .chat-title {{
             display: block;
+            flex: 1;
+            min-width: 0;
             color: #e8e8e8;
             font-size: 14px;
             line-height: 38px;
@@ -940,6 +1115,10 @@ def page_html(chat_id: str, device_id: str) -> str:
             text-overflow: ellipsis;
             white-space: nowrap;
         }}
+        .chat-delete {{ width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: #8fa9b8; cursor: pointer; opacity: 0; }}
+        .chat-row:hover .chat-delete, .chat-delete:focus-visible {{ opacity: 1; }}
+        .chat-delete:hover {{ background: #3a1720; color: #ffd2d2; }}
+        .mobile-menu, .mobile-nav-backdrop {{ display: none; }}
         .main {{ flex: 1; min-width: 0; display: flex; flex-direction: column; background: #000; }}
         .topbar {{
             height: 56px;
@@ -1143,6 +1322,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             text-transform: uppercase;
         }}
         .topbar-actions {{ display: flex; align-items: center; gap: 10px; }}
+        .topbar-actions form {{ margin: 0; display: flex; }}
         .mobile-new-chat {{ display: none; }}
         .mode {{
             background: #061522;
@@ -1381,6 +1561,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         .core-readout strong {{ margin-left: auto; color: #d6e5e6; font-weight: 500; }}
         .status-light {{ width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px rgba(152, 223, 114, 0.65); }}
         .status-light.busy {{ background: var(--warning); box-shadow: 0 0 10px rgba(232, 184, 95, 0.65); }}
+        .status-light.offline {{ background: #ff6b6b; box-shadow: 0 0 10px rgba(255, 107, 107, 0.55); }}
         .workspace-section {{ padding: 17px 18px; border-bottom: 1px solid var(--line); }}
         .engineering-card {{
             background:
@@ -1461,6 +1642,80 @@ def page_html(chat_id: str, device_id: str) -> str:
         .workspace-actions {{ display: grid; gap: 7px; margin-top: 10px; }}
         .workspace-actions button {{ min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 1px solid #1d3033; border-radius: 6px; background: #0a1012; color: #d4e0e1; font-size: 12px; text-align: left; cursor: pointer; }}
         .workspace-actions button:hover {{ border-color: #2e686c; color: #fff; }}
+        .cloud-status {{
+            min-width: 66px;
+            height: 32px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 10px;
+            border: 1px solid #286b74;
+            border-radius: 6px;
+            color: var(--accent);
+            background: #061522;
+            font: 10px/1 Consolas, "Cascadia Code", monospace;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }}
+        .cloud-status.offline {{ border-color: #704044; color: #ff9f9f; background: #190d12; }}
+        .empty-state {{
+            min-height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            width: min(760px, 100%);
+            padding: 48px 4px 34px;
+            text-align: left;
+        }}
+        .chat-welcome {{ max-width: 650px; }}
+        .conversation-kicker {{
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            margin-bottom: 18px;
+            color: var(--accent);
+            font: 11px/1.2 Consolas, "Cascadia Code", monospace;
+        }}
+        .conversation-kicker span {{ width: 7px; height: 7px; border-radius: 50%; background: var(--signal); }}
+        .empty-state h1 {{ margin: 0 0 12px; color: #f4fbff; font-size: 42px; font-weight: 620; line-height: 1.08; }}
+        .empty-state p {{ margin: 0; color: #9fb6c4; font-size: 16px; line-height: 1.55; }}
+        .mode-switch {{
+            width: min(860px, 100%);
+            min-height: 42px;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            margin: 0 auto 8px;
+            padding: 4px;
+            overflow-x: auto;
+            border: 1px solid #18374d;
+            border-radius: 7px;
+            background: #040c13;
+            scrollbar-width: none;
+        }}
+        .mode-switch::-webkit-scrollbar {{ display: none; }}
+        .mode-option {{
+            height: 32px;
+            flex: 1 0 auto;
+            min-width: 86px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 0 11px;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: #879da9;
+            font: 12px/1 "Segoe UI", Arial, sans-serif;
+            cursor: pointer;
+            white-space: nowrap;
+        }}
+        .mode-option svg {{ width: 15px; height: 15px; }}
+        .mode-option:hover {{ color: #dff8ff; background: #0a1c29; }}
+        .mode-option.active {{ color: #f3feff; background: #12344a; box-shadow: inset 0 0 0 1px #2a708d; }}
+        .composer-suggestions {{ margin-top: 9px; gap: 7px; justify-content: flex-start; }}
+        .composer-suggestions .suggestion {{ min-height: 36px; height: 36px; padding: 0 13px; border-radius: 6px; color: #a8bdc8; font-size: 12px; }}
         body.workspace-collapsed .workspace-panel {{ width: 0; flex-basis: 0; opacity: 0; overflow: hidden; border: 0; }}
         body.workspace-collapsed .workspace-open {{ display: inline-flex !important; }}
         @media (max-width: 1240px) {{
@@ -1483,6 +1738,36 @@ def page_html(chat_id: str, device_id: str) -> str:
             html, body {{ width: 100%; overflow-x: hidden; }}
             .app {{ min-height: 100dvh; height: 100dvh; overflow: hidden; }}
             .main {{ min-width: 0; }}
+            .mobile-menu {{
+                width: 32px;
+                height: 32px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid #213438;
+                border-radius: 8px;
+                background: #0b1416;
+                color: var(--accent);
+                font-size: 17px;
+                cursor: pointer;
+            }}
+            body.mobile-nav-open .sidebar {{
+                width: min(86vw, 320px);
+                height: 100dvh;
+                display: block;
+                position: fixed;
+                inset: 0 auto 0 0;
+                z-index: 70;
+                box-shadow: 18px 0 46px rgba(0, 0, 0, .55);
+            }}
+            body.mobile-nav-open .mobile-nav-backdrop {{
+                display: block;
+                position: fixed;
+                inset: 0;
+                z-index: 65;
+                border: 0;
+                background: rgba(0, 0, 0, .62);
+            }}
             .topbar {{
                 height: 52px;
                 padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
@@ -1580,6 +1865,20 @@ def page_html(chat_id: str, device_id: str) -> str:
             .composer-suggestions .suggestion {{ min-width:0; width:100%; height:38px; min-height:38px; padding:0 8px; font-size:13px; }}
             .hint {{ display: none; }}
             .image-gallery {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+            .empty-state {{ min-height: 100%; padding: 28px 2px; align-items: center; }}
+            .conversation-kicker {{ margin-bottom: 12px; font-size: 10px; }}
+            .mode-switch {{ width: 100%; margin-bottom: 7px; }}
+            .mode-option {{ flex: 0 0 auto; min-width: 82px; }}
+            .composer-suggestions {{
+                display: flex;
+                justify-content: flex-start;
+                gap: 6px;
+                margin-top: 7px;
+                overflow-x: auto;
+                scrollbar-width: none;
+            }}
+            .composer-suggestions::-webkit-scrollbar {{ display: none; }}
+            .composer-suggestions .suggestion {{ flex: 0 0 auto; width: auto; min-width: 0; height: 34px; min-height: 34px; padding: 0 10px; font-size: 12px; }}
         }}
         @media (max-width:380px) {{
             .topbar-actions {{ gap: 6px; }}
@@ -1607,6 +1906,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         .pet-toggle:hover {{ border-color: var(--accent); }}
         .pet-toggle .pet-face {{ position: absolute; inset: 0; }}
         .pet-online {{ position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 8px rgba(156, 255, 114, 0.8); z-index: 2; }}
+        .pet-online.offline {{ background: #ff6b6b; box-shadow: 0 0 8px rgba(255, 107, 107, 0.65); }}
         .pet-panel {{ position: fixed; z-index: 1200; top: 68px; right: 350px; width: 340px; height: min(500px, calc(100vh - 92px)); display: grid; grid-template-rows: 58px minmax(0, 1fr) 62px; border: 1px solid #28516d; border-radius: 8px; overflow: hidden; background: #07111d; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.52); }}
         .pet-panel[hidden] {{ display: none; }}
         .pet-header {{ display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--line); }}
@@ -1636,32 +1936,37 @@ def page_html(chat_id: str, device_id: str) -> str:
                     <span class="brand-mark">J</span>
                     <span class="brand-name">{APP_TITLE}</span>
                 </a>
-                <span class="item-menu global-menu" aria-hidden="true"><span class="brand-menu">&#8942;</span></span>
+                <span class="privacy-state">Anonymous</span>
             </div>
             <nav class="sidebar-nav" aria-label="Jarvis navigation">
-                <a class="nav-item nav-primary" href="/new"><span class="nav-icon">&#9998;</span><span>New chat</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">&#8981;</span><span>Search chats</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">&#9636;</span><span>Library</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">&#128193;</span><span>Projects</span></a>
-                <a class="nav-item" href="/"><span class="nav-icon">&#8759;</span><span>Apps</span></a>
+                <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
+                <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
+                <a class="nav-item" href="/api/device/export"><span class="nav-icon">&#8681;</span><span>Export my data</span></a>
+                <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
+                <button class="nav-item danger" id="delete-device-data" type="button"><span class="nav-icon">&#215;</span><span>Delete my data</span></button>
             </nav>
+            <label class="chat-search" id="chat-search-wrap" hidden>
+                <span class="sr-only">Search recent chats</span>
+                <input id="chat-search" type="search" placeholder="Search recent chats" autocomplete="off">
+            </label>
             <div class="recents-header"><span>Recents</span></div>
             {sidebar}
         </aside>
+        <button class="mobile-nav-backdrop" id="mobile-nav-backdrop" type="button" aria-label="Close chat navigation"></button>
         <main class="main">
             <header class="topbar">
                 <div class="title">JARVIS / CONVERSATION CORE</div>
                 <div class="topbar-actions">
-                    <button class="pet-toggle" id="pet-toggle" type="button" title="Talk to Mini Jarvis" aria-label="Talk to Mini Jarvis"><span class="pet-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span class="pet-online"></span></button>
-                    <a class="mobile-new-chat" href="/new" title="New chat" aria-label="New chat">+</a>
-                    <button class="icon-button workspace-open" id="workspace-open" type="button" title="Open prototype workspace" aria-label="Open prototype workspace"><span aria-hidden="true">&lsaquo;</span></button>
-                    <div class="mode">Secure &amp; Safe</div>
+                    <button class="mobile-menu" id="mobile-menu" type="button" title="Open chat navigation" aria-label="Open chat navigation">&#9776;</button>
+                    <button class="pet-toggle" id="pet-toggle" type="button" title="Talk to Mini Jarvis" aria-label="Talk to Mini Jarvis"><span class="pet-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span><span class="pet-online{' offline' if not brain_ready else ''}"></span></button>
+                    <form action="/new" method="post"><button class="mobile-new-chat" type="submit" title="New chat" aria-label="New chat">+</button></form>
+                    <div class="cloud-status{' offline' if not brain_ready else ''}">{'AI online' if brain_ready else 'AI setup'}</div>
                 </div>
             </header>
             <section class="pet-panel" id="pet-panel" aria-label="Companion chat" hidden>
                 <header class="pet-header">
                     <span class="pet-header-face mascot-crop"><img src="/assets/jarvis-mascot.png" alt=""></span>
-                    <span class="pet-header-copy"><strong>Mini Jarvis</strong><span>Companion online</span></span>
+                    <span class="pet-header-copy"><strong>Mini Jarvis</strong><span>{html.escape(brain_label)}</span></span>
                     <button class="pet-close" id="pet-close" type="button" title="Close companion" aria-label="Close companion">&times;</button>
                 </header>
                 <div class="pet-messages" id="pet-messages" aria-live="polite"></div>
@@ -1677,8 +1982,11 @@ def page_html(chat_id: str, device_id: str) -> str:
                 </div>
             </section>
             <section class="composer">
+                <div class="mode-switch" id="mode-switch" role="group" aria-label="Jarvis response mode">
+                    {mode_switch}
+                </div>
                 <form class="chat-form" id="chat-form">
-                    <textarea id="message-input" name="message" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
+                    <textarea id="message-input" name="message" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
                     <button class="send-button" id="send-button" type="submit">Send</button>
                 </form>
                 {suggestions}
@@ -1687,7 +1995,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         </main>
         {workspace_panel}
     </div>
-    <script>
+    <script nonce="{html.escape(csp_nonce)}">
         const chatId = {json.dumps(chat_id)};
         const chat = document.getElementById("chat");
         const messages = document.getElementById("messages");
@@ -1696,13 +2004,53 @@ def page_html(chat_id: str, device_id: str) -> str:
         const button = document.getElementById("send-button");
         const emptyState = document.getElementById("empty-state");
         const suggestions = document.getElementById("composer-suggestions");
+        const initialMode = {json.dumps(active_mode)};
+        const modeStorageKey = `jarvis_mode_${{chatId}}`;
+        const modeButtons = Array.from(document.querySelectorAll("[data-chat-mode]"));
+        const starterButtons = Array.from(document.querySelectorAll("[data-mode-starter]"));
+        const modeConfig = {{
+            chat: {{ placeholder: "Message Jarvis...", starters: ["Talk something through with me", "Help me make a decision", "Explain an idea clearly"] }},
+            study: {{ placeholder: "What do you want to learn?", starters: ["Teach me this step by step", "Quiz me on a topic", "Help me understand my homework"] }},
+            code: {{ placeholder: "Describe the code, feature, or bug...", starters: ["Debug this code with me", "Plan a small app", "Explain this programming concept"] }},
+            research: {{ placeholder: "What should Jarvis research?", starters: ["Research the latest information about", "Compare reliable sources for", "Give me an evidence-based summary of"] }},
+            create: {{ placeholder: "What should we create?", starters: ["Write a strong first draft", "Brainstorm distinctive ideas for", "Improve the style of this"] }},
+            engineer: {{ placeholder: "Describe the part, constraints, and measurements...", starters: ["Engineer a physical part for", "Check the risks and loads for", "Create a prototype test plan for"] }}
+        }};
+        let activeMode = localStorage.getItem(modeStorageKey) || initialMode;
+        if (!modeConfig[activeMode]) activeMode = "chat";
         const workspaceClose = document.getElementById("workspace-close");
         const workspaceOpen = document.getElementById("workspace-open");
+        const mobileMenu = document.getElementById("mobile-menu");
+        const mobileNavBackdrop = document.getElementById("mobile-nav-backdrop");
+        const chatSearchToggle = document.getElementById("chat-search-toggle");
+        const chatSearchWrap = document.getElementById("chat-search-wrap");
+        const chatSearch = document.getElementById("chat-search");
+        const deleteDeviceData = document.getElementById("delete-device-data");
         const petToggle = document.getElementById("pet-toggle");
         const petPanel = document.getElementById("pet-panel");
         const petClose = document.getElementById("pet-close");
         const petMessages = document.getElementById("pet-messages");
         const petForm = document.getElementById("pet-form");
+        function setChatMode(mode, focusInput = true) {{
+            if (!modeConfig[mode]) return;
+            activeMode = mode;
+            try {{ localStorage.setItem(modeStorageKey, mode); }} catch (error) {{}}
+            modeButtons.forEach(item => {{
+                const selected = item.dataset.chatMode === mode;
+                item.classList.toggle("active", selected);
+                item.setAttribute("aria-pressed", selected ? "true" : "false");
+            }});
+            input.placeholder = modeConfig[mode].placeholder;
+            starterButtons.forEach((item, index) => {{
+                const prompt = modeConfig[mode].starters[index] || "";
+                item.textContent = prompt;
+                item.dataset.prompt = prompt;
+                item.hidden = !prompt;
+            }});
+            if (focusInput) input.focus();
+        }}
+        modeButtons.forEach(item => item.addEventListener("click", () => setChatMode(item.dataset.chatMode)));
+        setChatMode(activeMode, false);
         const petInput = document.getElementById("pet-input");
         const petSend = document.getElementById("pet-send");
         const coreState = document.getElementById("core-state");
@@ -1714,6 +2062,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         const engineeringProject = document.getElementById("engineering-project");
         const engineeringNext = document.getElementById("engineering-next");
         const engineeringExport = document.getElementById("engineering-export");
+        const brainReady = {json.dumps(brain_ready)};
         let activityState = loadActivityState();
         let engineeringState = loadEngineeringState();
         let petLoaded = false;
@@ -1723,6 +2072,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         function setCoreState(label, busy = false) {{
             if (coreState) coreState.textContent = label;
             if (statusLight) statusLight.classList.toggle("busy", busy);
+            if (statusLight) statusLight.classList.toggle("offline", !brainReady && !busy);
         }}
         function loadActivityState() {{
             try {{
@@ -1799,7 +2149,7 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         function updateEngineeringDashboard(stateLabel) {{
             const active = engineeringState.active;
-            if (engineeringStatus) engineeringStatus.textContent = stateLabel || (active ? "PROJECT ACTIVE" : "READY");
+            if (engineeringStatus) engineeringStatus.textContent = stateLabel || (active ? "PROJECT ACTIVE" : (brainReady ? "READY" : "AI OFFLINE"));
             if (engineeringProject) engineeringProject.textContent = active ? engineeringState.title : "Awaiting a physical design";
             if (engineeringNext) engineeringNext.textContent = active
                 ? "Jarvis is retaining this design context. Add measurements, constraints, photos, material limits, or ask for the next engineering decision."
@@ -1962,9 +2312,10 @@ def page_html(chat_id: str, device_id: str) -> str:
                     body: JSON.stringify({{ message: text }})
                 }});
                 const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || data.answer || "Request failed");
                 if (placeholder) placeholder.textContent = data.answer || "I lost that thought. Try me again.";
             }} catch (error) {{
-                if (placeholder) placeholder.textContent = "I could not reach my conversation brain. Try me again shortly.";
+                if (placeholder) placeholder.textContent = error.message || "I could not reach my conversation brain. Try me again shortly.";
             }} finally {{
                 petBusy = false;
                 if (petSend) petSend.disabled = false;
@@ -1972,6 +2323,34 @@ def page_html(chat_id: str, device_id: str) -> str:
                 petInput.focus();
             }}
         }}
+        function closeMobileNav() {{ document.body.classList.remove("mobile-nav-open"); }}
+        if (mobileMenu) mobileMenu.addEventListener("click", () => document.body.classList.toggle("mobile-nav-open"));
+        if (mobileNavBackdrop) mobileNavBackdrop.addEventListener("click", closeMobileNav);
+        if (chatSearchToggle && chatSearchWrap) chatSearchToggle.addEventListener("click", () => {{
+            chatSearchWrap.hidden = !chatSearchWrap.hidden;
+            if (!chatSearchWrap.hidden) chatSearch?.focus();
+        }});
+        if (chatSearch) chatSearch.addEventListener("input", () => {{
+            const query = chatSearch.value.trim().toLowerCase();
+            document.querySelectorAll("[data-chat-row]").forEach(row => {{
+                row.hidden = Boolean(query) && !String(row.dataset.title || "").includes(query);
+            }});
+        }});
+        document.querySelectorAll("[data-delete-chat]").forEach(item => item.addEventListener("click", async event => {{
+            event.preventDefault();
+            const targetId = item.dataset.deleteChat;
+            if (!targetId || !window.confirm("Delete this conversation permanently?")) return;
+            const response = await fetch(`/api/chats/${{targetId}}`, {{ method: "DELETE" }});
+            if (!response.ok) {{ window.alert("That conversation could not be deleted."); return; }}
+            if (targetId === chatId) window.location.assign("/");
+            else item.closest("[data-chat-row]")?.remove();
+        }}));
+        if (deleteDeviceData) deleteDeviceData.addEventListener("click", async () => {{
+            if (!window.confirm("Delete every Jarvis and MJ conversation saved for this browser? This cannot be undone.")) return;
+            const response = await fetch("/api/device", {{ method: "DELETE" }});
+            if (response.ok) window.location.assign("/");
+            else window.alert("Your data could not be deleted just now.");
+        }});
         if (petToggle) petToggle.addEventListener("click", () => petPanel?.hidden ? openPetPanel() : closePetPanel());
         document.querySelectorAll("[data-open-mj]").forEach(item => item.addEventListener("click", openPetPanel));
         if (petClose) petClose.addEventListener("click", closePetPanel);
@@ -2016,26 +2395,26 @@ def page_html(chat_id: str, device_id: str) -> str:
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
-            const directEngineeringRequest = engineeringIntent(text);
-            const engineeringRun = directEngineeringRequest || engineeringState.active;
-            if (directEngineeringRequest) activateEngineeringProject(text);
+            const engineeringRun = activeMode === "engineer";
+            if (engineeringRun && !engineeringState.active) activateEngineeringProject(text);
             else if (engineeringRun) updateEngineeringDashboard("ANALYSING");
             const startedAt = Date.now();
             addMessage("user", text);
             input.value = "";
             button.disabled = true;
-            const placeholder = addMessage("Jarvis", "Analysing");
+            const placeholder = addMessage("Jarvis", "Thinking");
             let thinkingStep=0;
-            const thinkingTimer=window.setInterval(()=>{{thinkingStep=(thinkingStep+1)%4;placeholder.querySelector(".bubble").textContent="Analysing"+".".repeat(thinkingStep);}},350);
+            const thinkingTimer=window.setInterval(()=>{{thinkingStep=(thinkingStep+1)%4;placeholder.querySelector(".bubble").textContent="Thinking"+".".repeat(thinkingStep);}},350);
             setCoreState("ANALYSING", true);
             updateActivityDashboard("THINKING");
             try {{
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: text }})
+                    body: JSON.stringify({{ message: text, mode: activeMode }})
                 }});
                 const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Jarvis could not process that request.");
                 const answerText = data.answer || "No response.";
                 placeholder.querySelector(".bubble").innerHTML = renderContent(answerText);
                 if (engineeringRun) {{
@@ -2047,12 +2426,12 @@ def page_html(chat_id: str, device_id: str) -> str:
                 if(elapsedMs&&latencyReadout) latencyReadout.textContent=`${{(elapsedMs/1000).toFixed(1)}}s`;
                 recordActivityRun(elapsedMs);
             }} catch (error) {{
-                placeholder.querySelector(".bubble").textContent = "Connection error. Jarvis.AI did not respond.";
+                placeholder.querySelector(".bubble").textContent = error.message || "Connection error. Jarvis.AI did not respond.";
                 updateActivityDashboard("ERROR");
             }} finally {{
                 window.clearInterval(thinkingTimer);
                 button.disabled = false;
-                setCoreState("READY", false);
+                setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
                 window.setTimeout(() => updateActivityDashboard("IDLE"), 1600);
                 input.focus();
                 scrollDown();
@@ -2070,9 +2449,11 @@ def page_html(chat_id: str, device_id: str) -> str:
         }}
         updateActivityDashboard();
         updateEngineeringDashboard();
+        setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
         startEngineeringPreview();
         startCoreVisual();
-        scrollDown();
+        if (messages.querySelector(".message")) scrollDown();
+        else chat.scrollTop = 0;
     </script>
 </body>
 </html>"""
@@ -2214,20 +2595,60 @@ self.addEventListener("fetch", event => {
 
 @app.get("/robots.txt")
 def robots_txt() -> Response:
-    return Response("User-agent: *\nAllow: /\n", media_type="text/plain")
+    return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy() -> HTMLResponse:
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy | {html.escape(APP_TITLE)}</title>
+    <style>
+        body {{ margin: 0; background: #071018; color: #eaf6ff; font: 16px/1.6 system-ui, sans-serif; }}
+        main {{ width: min(720px, calc(100% - 40px)); margin: 56px auto; }}
+        h1, h2 {{ line-height: 1.2; }}
+        h2 {{ margin-top: 30px; font-size: 19px; }}
+        p, li {{ color: #b9cad5; }}
+        a {{ color: #70e4dc; }}
+        code {{ color: #fff; }}
+    </style>
+</head>
+<body><main>
+    <p><a href="/">Back to Jarvis</a></p>
+    <h1>Privacy</h1>
+    <p>Jarvis is an anonymous public chat service. It does not require an account, but it stores a signed browser identifier so this browser can reopen its conversations.</p>
+    <h2>What is stored</h2>
+    <p>Your conversation text, companion-chat text, generated chat titles, and random conversation identifiers are stored. Jarvis does not request your camera, microphone, location, contacts, or local computer files.</p>
+    <h2>AI providers</h2>
+    <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
+    <h2>Your controls</h2>
+    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to permanently remove them. Clearing the Jarvis browser cookie without exporting first can make existing conversations inaccessible.</p>
+    <h2>Device control</h2>
+    <p>This public version cannot open apps, read files, or control the computer running your private Jarvis installation.</p>
+</main></body></html>"""
+    )
 
 
 def status_payload() -> dict[str, Any]:
     providers = available_cloud_providers()
-    selected = providers[0] if providers else DEFAULT_PROVIDER
+    storage_online = STORE.health()
+    fully_ready = bool(
+        providers and storage_online and STORE.persistent and SESSION_SECRET_CONFIGURED
+    )
     return {
-        "status": "online",
+        "status": "ready" if fully_ready else "degraded",
         "app": APP_TITLE,
         "version": APP_VERSION,
         "time": now_stamp(),
-        "provider": selected,
-        "model": provider_model("openrouter") if providers else "not configured",
         "cloud_brain_configured": bool(providers),
+        "storage_online": storage_online,
+        "storage_backend": STORE.backend_name,
+        "storage_persistent": STORE.persistent,
+        "stable_sessions": SESSION_SECRET_CONFIGURED,
         "device_control": False,
         "network_mode": "cloud-safe",
     }
@@ -2235,7 +2656,14 @@ def status_payload() -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return status_payload()
+    return {"status": "online", "app": APP_TITLE, "version": APP_VERSION}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    payload = status_payload()
+    ready_now = payload["status"] == "ready"
+    return JSONResponse(payload, status_code=200 if ready_now else 503)
 
 
 @app.get("/status")
@@ -2249,51 +2677,76 @@ def home(request: Request) -> RedirectResponse:
     chats = list_chats(device_id)
     chat_id = chats[-1][0] if chats else create_chat(device_id)
     response = RedirectResponse(url=f"/chat/{chat_id}", status_code=303)
-    response.set_cookie("jarvis_cloud_device", device_id, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+    set_device_cookie(response, request, device_id)
     return response
 
 
-@app.get("/new")
+@app.post("/new")
 def new_chat(request: Request) -> RedirectResponse:
     device_id = device_id_from_request(request)
     chat_id = create_chat(device_id)
     response = RedirectResponse(url=f"/chat/{chat_id}", status_code=303)
-    response.set_cookie("jarvis_cloud_device", device_id, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+    set_device_cookie(response, request, device_id)
     return response
+
+
+@app.get("/new")
+def old_new_chat_link() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/chat/{chat_id}", response_class=HTMLResponse)
 def open_chat(chat_id: str, request: Request) -> HTMLResponse:
     device_id = device_id_from_request(request)
-    if not chat_path(chat_id).exists():
-        chat_id = create_chat(device_id)
-    save_device_chat(device_id, chat_id)
-    response = HTMLResponse(page_html(chat_id, device_id))
-    response.set_cookie("jarvis_cloud_device", device_id, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return HTMLResponse("This conversation is unavailable.", status_code=404)
+    nonce = secrets.token_urlsafe(18)
+    response = HTMLResponse(page_html(chat_id, device_id, nonce))
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}' https://unpkg.com; "
+        f"style-src 'self' 'nonce-{nonce}'; "
+        "img-src 'self' data: https:; connect-src 'self'; font-src 'self'; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+    )
+    set_device_cookie(response, request, device_id)
     return response
 
 
 @app.post("/api/chat/{chat_id}")
 def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
-    if not chat_path(chat_id).exists():
-        save_chat(chat_id, [])
-    save_device_chat(device_id, chat_id)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
 
     text = clean_text(payload.message)
+    if not text:
+        return JSONResponse({"detail": "Message is empty."}, status_code=400)
     messages = load_chat(chat_id)
     started = time.perf_counter()
-    answer = jarvis_reply(text, chat_id)
-    messages.append({"role": "user", "content": text, "time": now_stamp()})
-    messages.append({"role": "Jarvis", "content": answer, "time": now_stamp()})
+    answer = jarvis_reply(text, chat_id, payload.mode)
+    messages.append({"role": "user", "content": text, "time": now_stamp(), "mode": payload.mode})
+    messages.append({"role": "Jarvis", "content": answer, "time": now_stamp(), "mode": payload.mode})
     save_chat(chat_id, messages)
-    return JSONResponse({"answer": answer, "elapsed_ms": round((time.perf_counter() - started) * 1000)})
+    return JSONResponse(
+        {
+            "answer": answer,
+            "mode": payload.mode,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        }
+    )
 
 
 @app.get("/api/pet/{chat_id}")
 def api_pet_history(chat_id: str, request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
-    if chat_id not in get_device_chats(device_id) or not chat_path(chat_id).exists():
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return JSONResponse({"history": []})
     return JSONResponse({"history": load_pet_chat(chat_id)})
 
@@ -2301,12 +2754,52 @@ def api_pet_history(chat_id: str, request: Request) -> JSONResponse:
 @app.post("/api/pet/{chat_id}")
 def api_pet_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
-    if chat_id not in get_device_chats(device_id) or not chat_path(chat_id).exists():
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return JSONResponse({"answer": "This conversation is no longer available."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"answer": "Say something to me first."})
     return JSONResponse({"answer": pet_reply(text, chat_id)})
+
+
+@app.delete("/api/chats/{chat_id}")
+def api_delete_chat(chat_id: str, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.delete_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    return JSONResponse({"deleted": True})
+
+
+@app.get("/api/device/export")
+def api_export_device(request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chats = [
+        {
+            "id": chat_id,
+            "title": chat_title(chat_id),
+            "messages": load_chat(chat_id),
+            "companion_messages": load_pet_chat(chat_id),
+        }
+        for chat_id in get_device_chats(device_id)
+        if STORE.owns_chat(device_id, chat_id)
+    ]
+    response = JSONResponse({"exported_at": now_stamp(), "chats": chats})
+    response.headers["Content-Disposition"] = 'attachment; filename="jarvis-data-export.json"'
+    return response
+
+
+@app.delete("/api/device")
+def api_delete_device(request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    deleted = STORE.delete_device(device_id)
+    response = JSONResponse({"deleted": True, "chats_deleted": deleted})
+    response.delete_cookie(DEVICE_COOKIE)
+    return response
 
 
 if __name__ == "__main__":

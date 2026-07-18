@@ -1,14 +1,25 @@
 services:
   - type: web
-    name: jarvis-web
-    env: python
+    name: jarvis-web-cloud
+    runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: JARVIS_CLOUD_PROVIDER
-        value: openrouter
+        value: groq
+      - key: JARVIS_GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GROQ_API_KEY
+        sync: false
       - key: JARVIS_OPENROUTER_MODEL
-        value: tencent/hy3:free
+        value: openrouter/free
       - key: OPENROUTER_API_KEY
+        sync: false
+      - key: JARVIS_SESSION_SECRET
+        generateValue: true
+      - key: JARVIS_PUBLIC_ORIGIN
+        value: https://jarvis-web-cloud.onrender.com
+      - key: DATABASE_URL
         sync: false
