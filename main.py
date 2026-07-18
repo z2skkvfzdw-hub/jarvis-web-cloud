@@ -701,11 +701,11 @@ def page_html(chat_id: str, device_id: str) -> str:
                 </div>
             </section>
             <section class="activity-ledger" aria-label="Jarvis activity ledger">
-                <div class="ledger-card primary">
-                    <span>Today</span>
-                    <strong data-activity-metric="credits">0.00 JC</strong>
-                    <small>Jarvis credits, not cash</small>
-                </div>
+                <button class="ledger-card primary mj-open-card" data-open-mj type="button">
+                    <span>Companion</span>
+                    <strong>Talk to MJ</strong>
+                    <small>Open Mini Jarvis</small>
+                </button>
                 <div class="ledger-card">
                     <span>Runs</span>
                     <strong data-activity-metric="runs">0</strong>
@@ -777,12 +777,15 @@ def page_html(chat_id: str, device_id: str) -> str:
                         <button id="engineering-export" type="button" disabled>Export latest brief</button>
                     </div>
                 </section>
-                <section class="workspace-section earnings-card">
-                    <div class="section-heading"><span class="eyebrow">AI time ledger</span><span data-activity-metric="live">IDLE</span></div>
-                    <strong class="credit-amount" data-activity-metric="credits">0.00 JC</strong>
-                    <p>Local session activity. No real money, no ads, no payout claim.</p>
+                <section class="workspace-section activity-card">
+                    <div class="section-heading"><span class="eyebrow">Mini Jarvis</span><span data-activity-metric="live">IDLE</span></div>
+                    <button class="mj-open-button" data-open-mj type="button">
+                        <span>Talk to MJ</span>
+                        <strong>Cloud companion</strong>
+                    </button>
+                    <p>Open the Mini Jarvis companion chat from any device.</p>
                     <div class="mini-bars wide" data-activity-bars></div>
-                    <div class="earnings-stats">
+                    <div class="activity-stats">
                         <div><span>Runs</span><strong data-activity-metric="runs">0</strong></div>
                         <div><span>Average</span><strong data-activity-metric="average">--</strong></div>
                         <div><span>Last</span><strong data-activity-metric="last">waiting</strong></div>
@@ -1279,6 +1282,17 @@ def page_html(chat_id: str, device_id: str) -> str:
                 radial-gradient(circle at 84% 14%, rgba(152, 255, 114, 0.18), transparent 30%),
                 linear-gradient(150deg, rgba(9, 32, 39, 0.98), rgba(4, 10, 18, 0.94));
         }}
+        button.ledger-card {{
+            width: 100%;
+            color: inherit;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+        }}
+        .mj-open-card:hover {{
+            border-color: rgba(69, 240, 255, 0.88);
+            box-shadow: inset 0 0 24px rgba(69, 240, 255, 0.08), 0 0 20px rgba(69, 240, 255, 0.1);
+        }}
         .ledger-card span {{ display: block; color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
         .ledger-card strong {{ display: block; margin-top: 8px; color: #f4fbff; font-size: 22px; line-height: 1.05; }}
         .ledger-card small {{ display: block; margin-top: 7px; color: #88a6b4; font-size: 11px; line-height: 1.3; }}
@@ -1402,29 +1416,40 @@ def page_html(chat_id: str, device_id: str) -> str:
             color: var(--signal);
             font: 10px/1.2 Consolas, "Cascadia Code", monospace;
         }}
-        .credit-amount {{
-            display: block;
-            margin: 9px 0 6px;
+        .mj-open-button {{
+            width: 100%;
+            min-height: 58px;
+            margin: 10px 0 8px;
+            display: grid;
+            gap: 5px;
+            align-content: center;
+            padding: 10px 12px;
+            border: 1px solid rgba(69, 240, 255, 0.46);
+            border-radius: 7px;
+            background: linear-gradient(135deg, rgba(47, 125, 255, 0.2), rgba(7, 18, 29, 0.96));
             color: #f4fbff;
-            font-size: 30px;
-            line-height: 1;
-            letter-spacing: 0;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
         }}
+        .mj-open-button:hover {{ border-color: rgba(69, 240, 255, 0.9); box-shadow: 0 0 18px rgba(69, 240, 255, 0.12); }}
+        .mj-open-button span {{ color: var(--accent); font: 10px/1.2 Consolas, "Cascadia Code", monospace; text-transform: uppercase; }}
+        .mj-open-button strong {{ font-size: 18px; line-height: 1.1; }}
         .mini-bars.wide {{ height: 42px; margin: 13px 0 8px; }}
-        .earnings-stats {{
+        .activity-stats {{
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 8px;
             margin-top: 10px;
         }}
-        .earnings-stats div {{
+        .activity-stats div {{
             padding: 8px;
             border: 1px solid rgba(36, 74, 104, 0.62);
             border-radius: 7px;
             background: rgba(2, 8, 14, 0.55);
         }}
-        .earnings-stats span {{ display: block; color: #708084; font-size: 10px; }}
-        .earnings-stats strong {{ display: block; margin-top: 4px; color: #d9e5e5; font-size: 11px; overflow-wrap: anywhere; }}
+        .activity-stats span {{ display: block; color: #708084; font-size: 10px; }}
+        .activity-stats strong {{ display: block; margin-top: 4px; color: #d9e5e5; font-size: 11px; overflow-wrap: anywhere; }}
         .workspace-section h3 {{ margin: 8px 0 6px; color: #e8f2f2; font-size: 15px; font-weight: 600; line-height: 1.35; }}
         .workspace-section p {{ margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }}
         .telemetry-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }}
@@ -1733,10 +1758,8 @@ def page_html(chat_id: str, device_id: str) -> str:
             }});
         }}
         function updateActivityDashboard(live = "IDLE") {{
-            const credits = ((activityState.totalMs / 1000) * 0.03).toFixed(2) + " JC";
             const average = activityState.runs ? formatDuration(activityState.totalMs / activityState.runs) : "--";
             const last = activityState.history.length ? formatDuration(activityState.history[activityState.history.length - 1]) : "waiting";
-            setMetric("credits", credits);
             setMetric("runs", String(activityState.runs));
             setMetric("average", average);
             setMetric("last", last);
@@ -1750,7 +1773,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             activityState.history.push(cleanMs);
             activityState.history = activityState.history.slice(-10);
             saveActivityState();
-            updateActivityDashboard("CREDITED");
+            updateActivityDashboard("COMPLETE");
         }}
         function loadEngineeringState() {{
             try {{
@@ -1950,6 +1973,7 @@ def page_html(chat_id: str, device_id: str) -> str:
             }}
         }}
         if (petToggle) petToggle.addEventListener("click", () => petPanel?.hidden ? openPetPanel() : closePetPanel());
+        document.querySelectorAll("[data-open-mj]").forEach(item => item.addEventListener("click", openPetPanel));
         if (petClose) petClose.addEventListener("click", closePetPanel);
         if (petForm) petForm.addEventListener("submit", event => {{ event.preventDefault(); sendPetMessage(); }});
         document.addEventListener("keydown", event => {{
