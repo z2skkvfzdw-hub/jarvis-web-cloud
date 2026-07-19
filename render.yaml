@@ -11,6 +11,8 @@ services:
         value: nvidia
       - key: JARVIS_PROVIDER_CHAIN
         value: nvidia,groq,openrouter
+      - key: JARVIS_DEVICE_MEMORY
+        value: "true"
       - key: NVIDIA_MODEL
         value: openai/gpt-oss-120b
       - key: NVIDIA_BASE_URL

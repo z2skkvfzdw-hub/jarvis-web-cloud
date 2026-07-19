@@ -35,8 +35,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.5.0"
-CACHE_VERSION = "jarvis-ai-1-5-0"
+APP_VERSION = "1.5.1"
+CACHE_VERSION = "jarvis-ai-1-5-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -82,6 +82,8 @@ MODE_INSTRUCTIONS: dict[ChatMode, str] = {
 }
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 MAX_MESSAGE_CHARS = max(200, int(os.environ.get("JARVIS_MAX_MESSAGE_CHARS", "8000")))
+MAX_CHAT_REQUEST_BYTES = MAX_MESSAGE_CHARS * max(3, MAX_HISTORY_MESSAGES + 2)
+DEVICE_MEMORY_ENABLED = os.environ.get("JARVIS_DEVICE_MEMORY", "true").lower() in {"1", "true", "yes", "on"}
 RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("JARVIS_RATE_LIMIT_REQUESTS", "30")))
 RATE_LIMIT_SECONDS = max(10, int(os.environ.get("JARVIS_RATE_LIMIT_SECONDS", "600")))
 DEVICE_COOKIE = "jarvis_cloud_device"
@@ -112,7 +114,7 @@ async def add_web_headers(request: Request, call_next):
         if origin and origin != expected_origin:
             return JSONResponse({"detail": "Cross-origin request blocked."}, status_code=403)
         content_length = request.headers.get("content-length", "")
-        if content_length.isdigit() and int(content_length) > MAX_MESSAGE_CHARS * 2:
+        if content_length.isdigit() and int(content_length) > MAX_CHAT_REQUEST_BYTES:
             return JSONResponse({"detail": "Request is too large."}, status_code=413)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -131,9 +133,15 @@ async def add_web_headers(request: Request, call_next):
     return response
 
 
+class ChatHistoryItem(BaseModel):
+    role: str = Field(max_length=20)
+    content: str = Field(max_length=MAX_MESSAGE_CHARS)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     mode: ChatMode = "chat"
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES)
 
 
 class SlidingRateLimiter:
@@ -773,10 +781,25 @@ def engineering_fallback(text: str) -> str:
     )
 
 
-def jarvis_reply(user_text: str, chat_id: str, mode: ChatMode = "chat") -> str:
+def normalized_client_history(items: list[ChatHistoryItem]) -> list[dict[str, str]]:
+    history: list[dict[str, str]] = []
+    for item in items[-MAX_HISTORY_MESSAGES:]:
+        role = "Jarvis" if item.role.lower() in {"jarvis", "assistant", "pet"} else "user"
+        content = clean_text(item.content)
+        if content:
+            history.append({"role": role, "content": content[:2500]})
+    return history
+
+
+def jarvis_reply(
+    user_text: str,
+    chat_id: str,
+    mode: ChatMode = "chat",
+    history_override: list[dict[str, str]] | None = None,
+) -> str:
     text = clean_text(user_text)
     lowered = text.lower()
-    history = load_chat(chat_id)
+    history = history_override if history_override is not None else load_chat(chat_id)
 
     if not text:
         return "Send me a message first."
@@ -866,6 +889,8 @@ def render_gallery(content: str) -> str:
 
 
 def build_chat_history(chat_id: str) -> str:
+    if DEVICE_MEMORY_ENABLED:
+        return ""
     html_out = ""
     for item in load_chat(chat_id):
         role = item.get("role", "")
@@ -900,7 +925,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     brain_ready = bool(providers)
     brain_state = "ONLINE" if brain_ready else "SETUP REQUIRED"
     brain_label = "Cloud brain online" if brain_ready else "Cloud brain unavailable"
-    history = load_chat(chat_id)
+    history = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     active_mode = saved_chat_mode(chat_id)
     mode_options = (
         ("chat", "message-circle", "Chat"),
@@ -1976,7 +2001,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             <nav class="sidebar-nav" aria-label="Jarvis navigation">
                 <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
-                <a class="nav-item" href="/api/device/export"><span class="nav-icon">&#8681;</span><span>Export my data</span></a>
+                <a class="nav-item" href="/api/device/export" id="export-device-data"><span class="nav-icon">&#8681;</span><span>Export my data</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
                 <button class="nav-item danger" id="delete-device-data" type="button"><span class="nav-icon">&#215;</span><span>Delete my data</span></button>
             </nav>
@@ -2060,6 +2085,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         const chatSearchToggle = document.getElementById("chat-search-toggle");
         const chatSearchWrap = document.getElementById("chat-search-wrap");
         const chatSearch = document.getElementById("chat-search");
+        const exportDeviceData = document.getElementById("export-device-data");
         const deleteDeviceData = document.getElementById("delete-device-data");
         const petToggle = document.getElementById("pet-toggle");
         const petPanel = document.getElementById("pet-panel");
@@ -2102,12 +2128,105 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         let engineeringState = loadEngineeringState();
         let petLoaded = false;
         let petBusy = false;
+        const deviceMemoryEnabled = {json.dumps(DEVICE_MEMORY_ENABLED)};
+        const chatMemoryKey = `jarvis_chat_memory_${{chatId}}_v1`;
+        const chatIndexKey = "jarvis_chat_index_v1";
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
         function setCoreState(label, busy = false) {{
             if (coreState) coreState.textContent = label;
             if (statusLight) statusLight.classList.toggle("busy", busy);
             if (statusLight) statusLight.classList.toggle("offline", !brainReady && !busy);
+        }}
+        function readJsonStorage(key, fallback) {{
+            try {{
+                const value = JSON.parse(localStorage.getItem(key) || "null");
+                return value === null ? fallback : value;
+            }} catch (error) {{
+                return fallback;
+            }}
+        }}
+        function writeJsonStorage(key, value) {{
+            try {{
+                localStorage.setItem(key, JSON.stringify(value));
+                return true;
+            }} catch (error) {{
+                return false;
+            }}
+        }}
+        function cleanMemoryItem(item) {{
+            const role = String(item?.role || "").toLowerCase() === "user" ? "user" : "Jarvis";
+            const content = String(item?.content || "").slice(0, {MAX_MESSAGE_CHARS});
+            const mode = modeConfig[item?.mode] ? item.mode : "chat";
+            return content.trim() ? {{ role, content, mode, time: String(item?.time || "") }} : null;
+        }}
+        function getChatMemory(id = chatId) {{
+            if (!deviceMemoryEnabled) return [];
+            const items = readJsonStorage(`jarvis_chat_memory_${{id}}_v1`, []);
+            return Array.isArray(items) ? items.map(cleanMemoryItem).filter(Boolean).slice(-80) : [];
+        }}
+        function saveChatMemory(items, id = chatId) {{
+            if (!deviceMemoryEnabled) return;
+            writeJsonStorage(`jarvis_chat_memory_${{id}}_v1`, items.map(cleanMemoryItem).filter(Boolean).slice(-80));
+        }}
+        function rememberMessage(role, content, mode = activeMode) {{
+            const items = getChatMemory();
+            items.push({{ role, content, mode, time: new Date().toISOString() }});
+            saveChatMemory(items);
+            rememberChatTitle(content);
+        }}
+        function firstUserLine(items) {{
+            const first = items.find(item => item.role === "user" && item.content);
+            return first ? first.content.replace(/\\s+/g, " ").slice(0, 48) : "New Chat";
+        }}
+        function getChatIndex() {{
+            const index = readJsonStorage(chatIndexKey, []);
+            return Array.isArray(index) ? index.filter(item => item && item.id).slice(-80) : [];
+        }}
+        function saveChatIndex(index) {{
+            if (deviceMemoryEnabled) writeJsonStorage(chatIndexKey, index.slice(-80));
+        }}
+        function rememberChatTitle(seedText = "") {{
+            if (!deviceMemoryEnabled) return;
+            const items = getChatMemory();
+            const title = firstUserLine(items) || String(seedText || "New Chat").slice(0, 48);
+            const index = getChatIndex().filter(item => item.id !== chatId);
+            index.push({{ id: chatId, title, updatedAt: Date.now() }});
+            saveChatIndex(index);
+            document.querySelectorAll(`[data-chat-row]`).forEach(row => {{
+                const link = row.querySelector(`[href="/chat/${{chatId}}"]`);
+                if (link) {{
+                    link.textContent = title;
+                    link.title = title;
+                    row.dataset.title = title.toLowerCase();
+                }}
+            }});
+        }}
+        function renderLocalChatMemory() {{
+            if (!deviceMemoryEnabled || messages.querySelector(".message")) return;
+            const items = getChatMemory();
+            items.forEach(item => addMessage(item.role === "user" ? "user" : "Jarvis", item.content));
+            if (items.length) rememberChatTitle();
+        }}
+        function exportLocalMemory(event) {{
+            if (!deviceMemoryEnabled) return;
+            event.preventDefault();
+            const index = getChatIndex();
+            const chats = index.map(item => ({{
+                id: item.id,
+                title: item.title || firstUserLine(getChatMemory(item.id)),
+                messages: getChatMemory(item.id)
+            }}));
+            if (!index.some(item => item.id === chatId)) {{
+                chats.push({{ id: chatId, title: firstUserLine(getChatMemory()), messages: getChatMemory() }});
+            }}
+            const blob = new Blob([JSON.stringify({{ exported_at: new Date().toISOString(), memory: "device", chats }}, null, 2)], {{ type: "application/json" }});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "jarvis-device-memory.json";
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         }}
         function loadActivityState() {{
             try {{
@@ -2375,13 +2494,27 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             event.preventDefault();
             const targetId = item.dataset.deleteChat;
             if (!targetId || !window.confirm("Delete this conversation permanently?")) return;
+            if (deviceMemoryEnabled) {{
+                try {{
+                    localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
+                    saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
+                }} catch (error) {{}}
+            }}
             const response = await fetch(`/api/chats/${{targetId}}`, {{ method: "DELETE" }});
             if (!response.ok) {{ window.alert("That conversation could not be deleted."); return; }}
             if (targetId === chatId) window.location.assign("/");
             else item.closest("[data-chat-row]")?.remove();
         }}));
+        if (exportDeviceData) exportDeviceData.addEventListener("click", exportLocalMemory);
         if (deleteDeviceData) deleteDeviceData.addEventListener("click", async () => {{
             if (!window.confirm("Delete every Jarvis and MJ conversation saved for this browser? This cannot be undone.")) return;
+            if (deviceMemoryEnabled) {{
+                try {{
+                    getChatIndex().forEach(item => localStorage.removeItem(`jarvis_chat_memory_${{item.id}}_v1`));
+                    localStorage.removeItem(chatMemoryKey);
+                    localStorage.removeItem(chatIndexKey);
+                }} catch (error) {{}}
+            }}
             const response = await fetch("/api/device", {{ method: "DELETE" }});
             if (response.ok) window.location.assign("/");
             else window.alert("Your data could not be deleted just now.");
@@ -2430,11 +2563,13 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
+            const requestHistory = deviceMemoryEnabled ? getChatMemory().slice(-{MAX_HISTORY_MESSAGES}) : [];
             const engineeringRun = activeMode === "engineer";
             if (engineeringRun && !engineeringState.active) activateEngineeringProject(text);
             else if (engineeringRun) updateEngineeringDashboard("ANALYSING");
             const startedAt = Date.now();
             addMessage("user", text);
+            rememberMessage("user", text, activeMode);
             input.value = "";
             button.disabled = true;
             const placeholder = addMessage("Jarvis", "Thinking");
@@ -2446,12 +2581,13 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: text, mode: activeMode }})
+                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory }})
                 }});
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || "Jarvis could not process that request.");
                 const answerText = data.answer || "No response.";
                 placeholder.querySelector(".bubble").innerHTML = renderContent(answerText);
+                rememberMessage("Jarvis", answerText, activeMode);
                 if (engineeringRun) {{
                     engineeringState.latestBrief = answerText;
                     saveEngineeringState();
@@ -2485,6 +2621,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         updateActivityDashboard();
         updateEngineeringDashboard();
         setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
+        renderLocalChatMemory();
         startEngineeringPreview();
         startCoreVisual();
         if (messages.querySelector(".message")) scrollDown();
@@ -2655,13 +2792,15 @@ def privacy() -> HTMLResponse:
 <body><main>
     <p><a href="/">Back to Jarvis</a></p>
     <h1>Privacy</h1>
-    <p>Jarvis is an anonymous public chat service. It does not require an account, but it stores a signed browser identifier so this browser can reopen its conversations.</p>
+    <p>Jarvis is an anonymous public chat service. It does not require an account. Main chat memory is stored in this browser so this device can reopen and continue its conversations.</p>
     <h2>What is stored</h2>
-    <p>Your conversation text, companion-chat text, generated chat titles, and random conversation identifiers are stored. Jarvis does not request your camera, microphone, location, contacts, or local computer files.</p>
+    <p>Main chat text and chat titles are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. Jarvis does not request your camera, microphone, location, contacts, or local computer files.</p>
+    <h2>AI requests</h2>
+    <p>When you send a message, the recent browser-stored conversation context needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
     <h2>AI providers</h2>
     <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
     <h2>Your controls</h2>
-    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to permanently remove them. Clearing the Jarvis browser cookie without exporting first can make existing conversations inaccessible.</p>
+    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to remove them from this browser and clear server routing data for this browser.</p>
     <h2>Device control</h2>
     <p>This public version cannot open apps, read files, or control the computer running your private Jarvis installation.</p>
 </main></body></html>"""
@@ -2672,7 +2811,7 @@ def status_payload() -> dict[str, Any]:
     providers = available_cloud_providers()
     storage_online = STORE.health()
     fully_ready = bool(
-        providers and storage_online and STORE.persistent and SESSION_SECRET_CONFIGURED
+        providers and storage_online and (DEVICE_MEMORY_ENABLED or STORE.persistent) and SESSION_SECRET_CONFIGURED
     )
     return {
         "status": "ready" if fully_ready else "degraded",
@@ -2683,6 +2822,7 @@ def status_payload() -> dict[str, Any]:
         "storage_online": storage_online,
         "storage_backend": STORE.backend_name,
         "storage_persistent": STORE.persistent,
+        "memory_location": "device" if DEVICE_MEMORY_ENABLED else "server",
         "stable_sessions": SESSION_SECRET_CONFIGURED,
         "device_control": False,
         "network_mode": "cloud-safe",
@@ -2739,7 +2879,7 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(page_html(chat_id, device_id, nonce))
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
+        "default-src 'self' blob:; "
         f"script-src 'self' 'nonce-{nonce}' https://unpkg.com; "
         f"style-src 'self' 'nonce-{nonce}'; "
         "img-src 'self' data: https:; connect-src 'self'; font-src 'self'; "
@@ -2762,16 +2902,22 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"detail": "Message is empty."}, status_code=400)
-    messages = load_chat(chat_id)
+    messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
+    model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     started = time.perf_counter()
-    answer = jarvis_reply(text, chat_id, payload.mode)
-    messages.append({"role": "user", "content": text, "time": now_stamp(), "mode": payload.mode})
-    messages.append({"role": "Jarvis", "content": answer, "time": now_stamp(), "mode": payload.mode})
-    save_chat(chat_id, messages)
+    try:
+        answer = jarvis_reply(text, chat_id, payload.mode, history_override=model_history)
+    except TypeError:
+        answer = jarvis_reply(text, chat_id, payload.mode)
+    if not DEVICE_MEMORY_ENABLED:
+        messages.append({"role": "user", "content": text, "time": now_stamp(), "mode": payload.mode})
+        messages.append({"role": "Jarvis", "content": answer, "time": now_stamp(), "mode": payload.mode})
+        save_chat(chat_id, messages)
     return JSONResponse(
         {
             "answer": answer,
             "mode": payload.mode,
+            "memory": "device" if DEVICE_MEMORY_ENABLED else "server",
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
         }
     )

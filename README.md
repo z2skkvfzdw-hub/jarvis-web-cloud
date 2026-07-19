@@ -24,6 +24,7 @@ Render needs these environment variables:
 GROQ_API_KEY=<secret Groq key>
 JARVIS_CLOUD_PROVIDER=nvidia
 JARVIS_PROVIDER_CHAIN=nvidia,groq,openrouter
+JARVIS_DEVICE_MEMORY=true
 NVIDIA_API_KEY=<secret NVIDIA key>
 NVIDIA_MODEL=openai/gpt-oss-120b
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
@@ -34,12 +35,13 @@ DATABASE_URL=<private PostgreSQL connection string>
 ```
 
 `GROQ_API_KEY`, `OPENROUTER_API_KEY`, and `JARVIS_OPENROUTER_MODEL=openrouter/free`
-are optional fallback settings. Never commit secret values. Without `DATABASE_URL`,
-Render's temporary filesystem can lose chat history after a restart or redeploy.
+are optional fallback settings. Never commit secret values. With `JARVIS_DEVICE_MEMORY=true`,
+main chat memory is stored in the user's browser, so Render does not need PostgreSQL for
+public chat history. `DATABASE_URL` is still useful for server-owned features later.
 
 ## Public capabilities
 
-- Anonymous, browser-owned chat history
+- Anonymous, device-owned chat history stored in the user's browser
 - Six chat modes backed by NVIDIA, with optional Groq and OpenRouter fallback
 - Web and image search commands
 - Mobile chat navigation and installable PWA shell
