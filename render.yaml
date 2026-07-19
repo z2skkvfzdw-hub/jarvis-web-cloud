@@ -8,7 +8,15 @@ services:
     healthCheckPath: /health
     envVars:
       - key: JARVIS_CLOUD_PROVIDER
-        value: groq
+        value: nvidia
+      - key: JARVIS_PROVIDER_CHAIN
+        value: nvidia,groq,openrouter
+      - key: NVIDIA_MODEL
+        value: openai/gpt-oss-120b
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_API_KEY
+        sync: false
       - key: JARVIS_GROQ_MODEL
         value: llama-3.3-70b-versatile
       - key: GROQ_API_KEY

@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
+*.log
 .env
 cloud_chats/

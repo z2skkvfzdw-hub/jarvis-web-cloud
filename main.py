@@ -316,22 +316,48 @@ def cloud_key(provider: str) -> str:
         return os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("JARVIS_OPENROUTER_API_KEY", "")
     if provider == "groq":
         return os.environ.get("GROQ_API_KEY", "") or os.environ.get("JARVIS_GROQ_API_KEY", "")
+    if provider == "nvidia":
+        return os.environ.get("NVIDIA_API_KEY", "") or os.environ.get("JARVIS_NVIDIA_API_KEY", "")
     return ""
 
 
 def available_cloud_providers() -> list[str]:
-    providers = [provider for provider in ("openrouter", "groq") if cloud_key(provider)]
+    configured = [provider for provider in ("nvidia", "groq", "openrouter") if cloud_key(provider)]
+    requested = [
+        item.strip().lower()
+        for item in os.environ.get("JARVIS_PROVIDER_CHAIN", "").split(",")
+        if item.strip()
+    ]
     preferred = os.environ.get("JARVIS_CLOUD_PROVIDER", "").strip().lower()
-    if preferred in providers:
-        providers.remove(preferred)
-        providers.insert(0, preferred)
-    return providers
+    order = requested or ([preferred] if preferred else [])
+    order.extend(("nvidia", "groq", "openrouter"))
+    return [provider for index, provider in enumerate(order) if provider in configured and provider not in order[:index]]
 
 
 def provider_model(provider: str) -> str:
     if provider == "groq":
         return os.environ.get("JARVIS_GROQ_MODEL", "").strip() or "llama-3.3-70b-versatile"
+    if provider == "nvidia":
+        return (
+            os.environ.get("JARVIS_NVIDIA_MODEL", "").strip()
+            or os.environ.get("NVIDIA_MODEL", "").strip()
+            or "openai/gpt-oss-120b"
+        )
     return os.environ.get("JARVIS_OPENROUTER_MODEL", "").strip() or DEFAULT_MODEL or "openrouter/free"
+
+
+def nvidia_endpoint() -> str:
+    endpoint = os.environ.get("JARVIS_NVIDIA_ENDPOINT", "").strip()
+    if endpoint:
+        return endpoint
+    base_url = (
+        os.environ.get("JARVIS_NVIDIA_BASE_URL", "").strip()
+        or os.environ.get("NVIDIA_BASE_URL", "").strip()
+        or "https://integrate.api.nvidia.com/v1"
+    ).rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    return f"{base_url}/chat/completions"
 
 
 def cloud_generate(
@@ -383,6 +409,15 @@ def cloud_generate(
                     "messages": messages,
                     "temperature": 0.5,
                     "max_completion_tokens": 1200,
+                }
+            elif provider == "nvidia":
+                endpoint = nvidia_endpoint()
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.5,
+                    "max_tokens": 1200,
                 }
             else:
                 endpoint = "https://openrouter.ai/api/v1/chat/completions"

@@ -22,21 +22,25 @@ Render needs these environment variables:
 
 ```text
 GROQ_API_KEY=<secret Groq key>
-JARVIS_CLOUD_PROVIDER=groq
+JARVIS_CLOUD_PROVIDER=nvidia
+JARVIS_PROVIDER_CHAIN=nvidia,groq,openrouter
+NVIDIA_API_KEY=<secret NVIDIA key>
+NVIDIA_MODEL=openai/gpt-oss-120b
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 JARVIS_GROQ_MODEL=llama-3.3-70b-versatile
 JARVIS_SESSION_SECRET=<long random secret>
 JARVIS_PUBLIC_ORIGIN=https://jarvis-web-cloud.onrender.com
 DATABASE_URL=<private PostgreSQL connection string>
 ```
 
-`OPENROUTER_API_KEY` and `JARVIS_OPENROUTER_MODEL=openrouter/free` are optional
-fallback settings. Never commit secret values. Without `DATABASE_URL`, Render's
-temporary filesystem can lose chat history after a restart or redeploy.
+`GROQ_API_KEY`, `OPENROUTER_API_KEY`, and `JARVIS_OPENROUTER_MODEL=openrouter/free`
+are optional fallback settings. Never commit secret values. Without `DATABASE_URL`,
+Render's temporary filesystem can lose chat history after a restart or redeploy.
 
 ## Public capabilities
 
 - Anonymous, browser-owned chat history
-- Six chat modes backed by Groq, with optional OpenRouter fallback
+- Six chat modes backed by NVIDIA, with optional Groq and OpenRouter fallback
 - Web and image search commands
 - Mobile chat navigation and installable PWA shell
 - Signed sessions, rate limits, security headers, and privacy controls
