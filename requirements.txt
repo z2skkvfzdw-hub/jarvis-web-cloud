@@ -1,7 +1,10 @@
 ddgs>=9.9,<10
 fastapi>=0.116,<1
+bleach>=6.2,<7
+markdown>=3.7,<4
 psycopg[binary]>=3.2,<4
 pydantic>=2.10,<3
+pypdf>=5.0,<7
 python-multipart>=0.0.20,<1
 requests>=2.32,<3
 uvicorn[standard]>=0.34,<1

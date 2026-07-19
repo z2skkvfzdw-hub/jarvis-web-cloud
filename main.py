@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 import html
+import io
+import inspect
 import json
 import logging
 import os
@@ -12,16 +14,21 @@ import secrets
 import threading
 import time
 import uuid
+import zipfile
 from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+from xml.etree import ElementTree
 
+import bleach
+import markdown
 import requests
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pypdf import PdfReader
 
 try:
     from .cloud_store import build_store, canonical_id
@@ -35,8 +42,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.5.1"
-CACHE_VERSION = "jarvis-ai-1-5-1"
+APP_VERSION = "1.6.0"
+CACHE_VERSION = "jarvis-ai-1-6-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -44,8 +51,8 @@ ASSETS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
-ChatMode = Literal["chat", "study", "code", "research", "create", "engineer"]
-CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "code", "research", "create", "engineer")
+ChatMode = Literal["chat", "study", "essay", "math", "science", "code", "research", "create", "engineer"]
+CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "essay", "math", "science", "code", "research", "create", "engineer")
 MODE_INSTRUCTIONS: dict[ChatMode, str] = {
     "chat": (
         " Prioritize natural back-and-forth conversation. Be personable, direct, and curious without turning every "
@@ -55,6 +62,16 @@ MODE_INSTRUCTIONS: dict[ChatMode, str] = {
         " Act as a patient tutor. Explain ideas in clear stages, adapt to the learner's apparent level, use a small "
         "example when useful, and check understanding without withholding the answer. For practice requests, guide "
         "the learner before revealing a complete solution."
+    ),
+    "essay": (
+        " Act as an essay coach. Use the assignment, rubric, notes, and teacher feedback supplied by the learner. "
+        "Help brainstorm, outline, draft, revise, and self-check while preserving the learner's voice."
+    ),
+    "math": (
+        " Act as a precise maths tutor. Show the method, important working, final answer, and a quick check."
+    ),
+    "science": (
+        " Act as a careful science tutor. Explain mechanisms, evidence, units, assumptions, and safety limits."
     ),
     "code": (
         " Act as a senior software engineer. Give runnable, focused code when appropriate, state important assumptions, "
@@ -83,6 +100,14 @@ MODE_INSTRUCTIONS: dict[ChatMode, str] = {
 MAX_HISTORY_MESSAGES = int(os.environ.get("JARVIS_CLOUD_CONTEXT_MESSAGES", "10"))
 MAX_MESSAGE_CHARS = max(200, int(os.environ.get("JARVIS_MAX_MESSAGE_CHARS", "8000")))
 MAX_CHAT_REQUEST_BYTES = MAX_MESSAGE_CHARS * max(3, MAX_HISTORY_MESSAGES + 2)
+MAX_ATTACHMENTS = max(1, min(6, int(os.environ.get("JARVIS_MAX_ATTACHMENTS", "3"))))
+MAX_UPLOAD_BYTES = max(256_000, int(os.environ.get("JARVIS_MAX_UPLOAD_BYTES", str(8 * 1024 * 1024))))
+MAX_ATTACHMENT_CHARS = max(4000, int(os.environ.get("JARVIS_MAX_ATTACHMENT_CHARS", "24000")))
+MAX_ATTACHMENT_TOTAL_CHARS = max(
+    MAX_ATTACHMENT_CHARS,
+    int(os.environ.get("JARVIS_MAX_ATTACHMENT_TOTAL_CHARS", "40000")),
+)
+MAX_PDF_PAGES = max(1, min(200, int(os.environ.get("JARVIS_MAX_PDF_PAGES", "80"))))
 DEVICE_MEMORY_ENABLED = os.environ.get("JARVIS_DEVICE_MEMORY", "true").lower() in {"1", "true", "yes", "on"}
 RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("JARVIS_RATE_LIMIT_REQUESTS", "30")))
 RATE_LIMIT_SECONDS = max(10, int(os.environ.get("JARVIS_RATE_LIMIT_SECONDS", "600")))
@@ -138,10 +163,17 @@ class ChatHistoryItem(BaseModel):
     content: str = Field(max_length=MAX_MESSAGE_CHARS)
 
 
+class AttachmentContext(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    media_type: str = Field(default="text/plain", max_length=120)
+    text: str = Field(min_length=1, max_length=MAX_ATTACHMENT_CHARS)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     mode: ChatMode = "chat"
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES)
+    attachments: list[AttachmentContext] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
 
 
 class SlidingRateLimiter:
@@ -179,6 +211,96 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+TEXT_UPLOAD_SUFFIXES = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".html", ".css",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".log", ".sql", ".py", ".js", ".jsx", ".ts",
+    ".tsx", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".sh",
+    ".ps1", ".bat",
+}
+
+
+def safe_upload_name(value: str) -> str:
+    name = Path(str(value or "document")).name
+    name = re.sub(r"[\x00-\x1f<>:\"/\\|?*]", "_", name).strip(" .")
+    return (name or "document")[:160]
+
+
+def normalize_document_text(value: str) -> str:
+    value = str(value or "").replace("\x00", "")
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{4,}", "\n\n\n", value)
+    return value.strip()[:MAX_ATTACHMENT_CHARS]
+
+
+def decode_document_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def extract_office_xml(data: bytes, suffix: str) -> str:
+    prefix = "word/" if suffix == ".docx" else "ppt/slides/"
+    wanted = "word/document.xml" if suffix == ".docx" else None
+    parts: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = [item for item in archive.infolist() if item.filename.startswith(prefix)]
+        if wanted:
+            members = [item for item in members if item.filename == wanted]
+        else:
+            members = sorted(
+                (item for item in members if re.fullmatch(r"ppt/slides/slide\d+\.xml", item.filename)),
+                key=lambda item: int(re.search(r"\d+", item.filename).group()),
+            )
+        if sum(item.file_size for item in members) > MAX_UPLOAD_BYTES * 4:
+            raise ValueError("The document expands beyond the safe processing limit.")
+        for item in members:
+            root = ElementTree.fromstring(archive.read(item))
+            text_nodes = [node.text or "" for node in root.iter() if node.tag.endswith("}t")]
+            if text_nodes:
+                parts.append(" ".join(text_nodes))
+    return "\n\n".join(parts)
+
+
+def extract_document(data: bytes, filename: str, media_type: str = "") -> tuple[str, str, str]:
+    name = safe_upload_name(filename)
+    suffix = Path(name).suffix.lower()
+    detected_type = (media_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    try:
+        if suffix == ".pdf" or detected_type == "application/pdf":
+            reader = PdfReader(io.BytesIO(data))
+            if reader.is_encrypted:
+                try:
+                    reader.decrypt("")
+                except Exception as exc:
+                    raise ValueError("Password-protected PDFs are not supported.") from exc
+            text = "\n\n".join((page.extract_text() or "") for page in reader.pages[:MAX_PDF_PAGES])
+            detected_type = "application/pdf"
+        elif suffix in {".docx", ".pptx"}:
+            text = extract_office_xml(data, suffix)
+            detected_type = (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                if suffix == ".docx"
+                else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
+        elif suffix in TEXT_UPLOAD_SUFFIXES or detected_type.startswith("text/"):
+            text = decode_document_text(data)
+            detected_type = detected_type if detected_type.startswith("text/") else "text/plain"
+        else:
+            raise ValueError("Use a PDF, DOCX, PPTX, text, code, CSV, JSON, or Markdown file.")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Jarvis could not read that document.") from exc
+
+    text = normalize_document_text(text)
+    if not text:
+        raise ValueError("No readable text was found in that document.")
+    return name, detected_type, text
 
 
 def request_origin(request: Request) -> str:
@@ -791,15 +913,50 @@ def normalized_client_history(items: list[ChatHistoryItem]) -> list[dict[str, st
     return history
 
 
+def attachment_prompt(text: str, attachments: list[AttachmentContext]) -> str:
+    total = 0
+    blocks = [text]
+    for item in attachments[:MAX_ATTACHMENTS]:
+        content = clean_text(item.text)
+        total += len(content)
+        if total > MAX_ATTACHMENT_TOTAL_CHARS:
+            raise ValueError("Attached text is too large for one message.")
+        blocks.append(
+            "\n\nAttached document:"
+            f"\nName: {safe_upload_name(item.name)}"
+            f"\nType: {item.media_type}"
+            f"\nText:\n{content}"
+        )
+    return "\n".join(blocks)
+
+
+def call_jarvis_reply(
+    text: str,
+    chat_id: str,
+    mode: ChatMode,
+    history_override: list[dict[str, str]],
+    attachments: list[AttachmentContext],
+) -> str:
+    parameters = inspect.signature(jarvis_reply).parameters
+    kwargs: dict[str, Any] = {}
+    if "history_override" in parameters:
+        kwargs["history_override"] = history_override
+    if "attachments" in parameters:
+        kwargs["attachments"] = attachments
+    return jarvis_reply(text, chat_id, mode, **kwargs)
+
+
 def jarvis_reply(
     user_text: str,
     chat_id: str,
     mode: ChatMode = "chat",
     history_override: list[dict[str, str]] | None = None,
+    attachments: list[AttachmentContext] | None = None,
 ) -> str:
     text = clean_text(user_text)
     lowered = text.lower()
     history = history_override if history_override is not None else load_chat(chat_id)
+    model_text = attachment_prompt(text, attachments or []) if attachments else text
 
     if not text:
         return "Send me a message first."
@@ -843,10 +1000,10 @@ def jarvis_reply(
             return reply or search_results
 
     if mode == "engineer":
-        reply = cloud_generate(text, history, mode="engineer")
+        reply = cloud_generate(model_text, history, mode="engineer")
         return reply or engineering_fallback(text)
 
-    reply = cloud_generate(text, history, mode=mode)
+    reply = cloud_generate(model_text, history, mode=mode)
     if reply:
         return reply
 
@@ -854,10 +1011,25 @@ def jarvis_reply(
 
 
 def render_content(content: str) -> str:
-    escaped = html.escape(content)
-    escaped = re.sub(r"\[\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\-=]+\]\]", "", escaped).strip()
+    visible = re.sub(r"\[\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\-=]+\]\]", "", content).strip()
+    rendered = markdown.markdown(
+        visible,
+        extensions=["fenced_code", "tables", "sane_lists"],
+        output_format="html5",
+    )
+    rendered = bleach.clean(
+        rendered,
+        tags=[
+            "p", "br", "strong", "em", "code", "pre", "blockquote", "ul", "ol", "li",
+            "h1", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td", "a",
+        ],
+        attributes={"a": ["href", "title", "target", "rel"], "code": ["class"]},
+        protocols=["http", "https", "mailto"],
+        strip=True,
+    )
+    rendered = rendered.replace('<a href="', '<a target="_blank" rel="noopener noreferrer" href="')
     gallery = render_gallery(content)
-    return escaped + gallery
+    return rendered + gallery
 
 
 def render_gallery(content: str) -> str:
@@ -930,6 +1102,9 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     mode_options = (
         ("chat", "message-circle", "Chat"),
         ("study", "graduation-cap", "Study"),
+        ("essay", "file-pen-line", "Essay"),
+        ("math", "calculator", "Maths"),
+        ("science", "flask-conical", "Science"),
         ("code", "code-2", "Code"),
         ("research", "search", "Research"),
         ("create", "sparkles", "Create"),
@@ -949,7 +1124,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             <section class="chat-welcome" aria-label="Start a conversation with Jarvis">
                 <div class="conversation-kicker"><span></span> AI {brain_state}</div>
                 <h1>Talk to Jarvis</h1>
-                <p>Choose a mode, then ask a question or start a conversation.</p>
+                <p>How can I help? Choose a mode, then ask a question or start a conversation.</p>
             </section>
         </div>
         """
@@ -2071,6 +2246,9 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         const modeConfig = {{
             chat: {{ placeholder: "Message Jarvis...", starters: ["Talk something through with me", "Help me make a decision", "Explain an idea clearly"] }},
             study: {{ placeholder: "What do you want to learn?", starters: ["Teach me this step by step", "Quiz me on a topic", "Help me understand my homework"] }},
+            essay: {{ placeholder: "Paste the task, rubric, or draft...", starters: ["Help me plan this essay", "Improve my thesis", "Check this against the rubric"] }},
+            math: {{ placeholder: "Enter the maths problem...", starters: ["Show the working for", "Explain this formula", "Check my answer to"] }},
+            science: {{ placeholder: "Ask a science question...", starters: ["Explain this concept", "Help me plan this experiment", "Summarize the evidence for"] }},
             code: {{ placeholder: "Describe the code, feature, or bug...", starters: ["Debug this code with me", "Plan a small app", "Explain this programming concept"] }},
             research: {{ placeholder: "What should Jarvis research?", starters: ["Research the latest information about", "Compare reliable sources for", "Give me an evidence-based summary of"] }},
             create: {{ placeholder: "What should we create?", starters: ["Write a strong first draft", "Brainstorm distinctive ideas for", "Improve the style of this"] }},
@@ -2889,6 +3067,60 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
     return response
 
 
+def user_message_record(text: str, mode: ChatMode, attachments: list[AttachmentContext]) -> dict[str, Any]:
+    record: dict[str, Any] = {"role": "user", "content": text, "time": now_stamp(), "mode": mode}
+    if attachments:
+        record["model_content"] = attachment_prompt(text, attachments)
+        record["attachments"] = [
+            {"name": safe_upload_name(item.name), "media_type": item.media_type}
+            for item in attachments
+        ]
+    return record
+
+
+def assistant_message_record(answer: str, mode: ChatMode) -> dict[str, Any]:
+    return {"role": "Jarvis", "content": answer, "time": now_stamp(), "mode": mode}
+
+
+def ndjson_event(event_type: str, **payload: Any) -> str:
+    return json.dumps({"type": event_type, **payload}, ensure_ascii=False) + "\n"
+
+
+def cloud_generate_stream(
+    prompt: str,
+    history: list[dict[str, Any]] | None = None,
+    mode: ChatMode = "chat",
+    system_prompt: str | None = None,
+):
+    answer = cloud_generate(prompt, history=history, mode=mode, system_prompt=system_prompt)
+    if answer:
+        yield answer
+
+
+@app.post("/api/chats/{chat_id}/attachments")
+async def api_extract_attachment(chat_id: str, request: Request, file: UploadFile = File(...)) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+    filename = file.filename or "document"
+    media_type = file.content_type or ""
+    try:
+        data = await file.read(MAX_UPLOAD_BYTES + 1)
+    finally:
+        await file.close()
+    if len(data) > MAX_UPLOAD_BYTES:
+        return JSONResponse({"detail": "That document is larger than the upload limit."}, status_code=413)
+    try:
+        name, media_type, text = extract_document(data, filename, media_type)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    return JSONResponse({"name": name, "media_type": media_type, "text": text, "characters": len(text)})
+
+
 @app.post("/api/chat/{chat_id}")
 def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
@@ -2902,16 +3134,17 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"detail": "Message is empty."}, status_code=400)
+    try:
+        attachment_prompt(text, payload.attachments)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     started = time.perf_counter()
-    try:
-        answer = jarvis_reply(text, chat_id, payload.mode, history_override=model_history)
-    except TypeError:
-        answer = jarvis_reply(text, chat_id, payload.mode)
+    answer = call_jarvis_reply(text, chat_id, payload.mode, model_history, payload.attachments)
     if not DEVICE_MEMORY_ENABLED:
-        messages.append({"role": "user", "content": text, "time": now_stamp(), "mode": payload.mode})
-        messages.append({"role": "Jarvis", "content": answer, "time": now_stamp(), "mode": payload.mode})
+        messages.append(user_message_record(text, payload.mode, payload.attachments))
+        messages.append(assistant_message_record(answer, payload.mode))
         save_chat(chat_id, messages)
     return JSONResponse(
         {
@@ -2920,6 +3153,76 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
             "memory": "device" if DEVICE_MEMORY_ENABLED else "server",
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
         }
+    )
+
+
+@app.post("/api/chat/{chat_id}/stream")
+def api_chat_stream(chat_id: str, payload: ChatRequest, request: Request) -> Response:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+
+    text = clean_text(payload.message)
+    if not text:
+        return JSONResponse({"detail": "Message is empty."}, status_code=400)
+    try:
+        prompt = attachment_prompt(text, payload.attachments)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
+    messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
+    model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
+    if not DEVICE_MEMORY_ENABLED:
+        messages.append(user_message_record(text, payload.mode, payload.attachments))
+        save_chat(chat_id, messages)
+    started = time.perf_counter()
+
+    def stream_events():
+        answer_parts: list[str] = []
+        yield ndjson_event("start", mode=payload.mode)
+        try:
+            for chunk in cloud_generate_stream(prompt, history=model_history, mode=payload.mode):
+                if not chunk:
+                    continue
+                answer_parts.append(chunk)
+                yield ndjson_event("delta", content=chunk)
+            answer = clean_text("".join(answer_parts)) or "Jarvis did not return a response. Please try again."
+            if not DEVICE_MEMORY_ENABLED:
+                messages.append(assistant_message_record(answer, payload.mode))
+                save_chat(chat_id, messages)
+            yield ndjson_event(
+                "done",
+                answer=answer,
+                html=render_content(answer),
+                mode=payload.mode,
+                memory="device" if DEVICE_MEMORY_ENABLED else "server",
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+            )
+        except GeneratorExit:
+            raise
+        except Exception:
+            LOGGER.exception("Streaming response failed")
+            fallback = clean_text("".join(answer_parts)) or "Jarvis could not finish that response."
+            if not DEVICE_MEMORY_ENABLED:
+                messages.append(assistant_message_record(fallback, payload.mode))
+                save_chat(chat_id, messages)
+            yield ndjson_event(
+                "done",
+                answer=fallback,
+                html=render_content(fallback),
+                mode=payload.mode,
+                memory="device" if DEVICE_MEMORY_ENABLED else "server",
+                recovered=True,
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+            )
+
+    return StreamingResponse(
+        stream_events(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
 
 

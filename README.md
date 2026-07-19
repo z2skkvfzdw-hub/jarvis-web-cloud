@@ -42,7 +42,9 @@ public chat history. `DATABASE_URL` is still useful for server-owned features la
 ## Public capabilities
 
 - Anonymous, device-owned chat history stored in the user's browser
-- Six chat modes backed by NVIDIA, with optional Groq and OpenRouter fallback
+- Nine chat modes backed by NVIDIA, with optional Groq and OpenRouter fallback
+- In-memory document extraction for PDF, DOCX, PPTX, text, code, CSV, JSON, and Markdown files
+- Streaming response endpoint for chat clients that want incremental output
 - Web and image search commands
 - Mobile chat navigation and installable PWA shell
 - Signed sessions, rate limits, security headers, and privacy controls
