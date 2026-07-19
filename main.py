@@ -42,8 +42,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.6.0"
-CACHE_VERSION = "jarvis-ai-1-6-0"
+APP_VERSION = "1.6.1"
+CACHE_VERSION = "jarvis-ai-1-6-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
