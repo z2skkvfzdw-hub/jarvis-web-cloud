@@ -32,12 +32,17 @@ JARVIS_GROQ_MODEL=llama-3.3-70b-versatile
 JARVIS_SESSION_SECRET=<long random secret>
 JARVIS_PUBLIC_ORIGIN=https://jarvis-web-cloud.onrender.com
 DATABASE_URL=<private PostgreSQL connection string>
+JARVIS_ADSENSE_CLIENT=ca-pub-xxxxxxxxxxxxxxxx
+JARVIS_ADSENSE_SLOT_SIDEBAR=<AdSense slot id>
+JARVIS_ADSENSE_SLOT_COMPOSER=<AdSense slot id>
 ```
 
 `GROQ_API_KEY`, `OPENROUTER_API_KEY`, and `JARVIS_OPENROUTER_MODEL=openrouter/free`
 are optional fallback settings. Never commit secret values. With `JARVIS_DEVICE_MEMORY=true`,
 main chat memory is stored in the user's browser, so Render does not need PostgreSQL for
 public chat history. `DATABASE_URL` is still useful for server-owned features later.
+The `JARVIS_ADSENSE_*` settings are optional. Ads stay disabled unless a valid
+AdSense client id and at least one numeric slot id are configured.
 
 ## Public capabilities
 
@@ -48,6 +53,7 @@ public chat history. `DATABASE_URL` is still useful for server-owned features la
 - Web and image search commands
 - Mobile chat navigation and installable PWA shell
 - Signed sessions, rate limits, security headers, and privacy controls
+- Optional Google AdSense slots controlled by Render environment variables
 - PostgreSQL persistence when `DATABASE_URL` is configured
 
 This build deliberately has no access to desktop files, apps, commands, Ollama,

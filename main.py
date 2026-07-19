@@ -51,6 +51,9 @@ ASSETS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
+ADSENSE_CLIENT = os.environ.get("JARVIS_ADSENSE_CLIENT", "").strip()
+ADSENSE_SLOT_SIDEBAR = os.environ.get("JARVIS_ADSENSE_SLOT_SIDEBAR", "").strip()
+ADSENSE_SLOT_COMPOSER = os.environ.get("JARVIS_ADSENSE_SLOT_COMPOSER", "").strip()
 ChatMode = Literal["chat", "study", "essay", "math", "science", "code", "research", "create", "engineer"]
 CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "essay", "math", "science", "code", "research", "create", "engineer")
 MODE_INSTRUCTIONS: dict[ChatMode, str] = {
@@ -59,19 +62,26 @@ MODE_INSTRUCTIONS: dict[ChatMode, str] = {
         "reply into a checklist. Match the user's level of detail and keep continuity with the conversation."
     ),
     "study": (
-        " Act as a patient tutor. Explain ideas in clear stages, adapt to the learner's apparent level, use a small "
-        "example when useful, and check understanding without withholding the answer. For practice requests, guide "
-        "the learner before revealing a complete solution."
+        " Act as a patient tutor. Start by identifying what the learner is trying to understand and, when the task is "
+        "unclear, ask one focused question before solving. Teach in clear stages, adapt to the learner's apparent "
+        "level, use a small example when useful, and include a quick self-check. For homework or practice, guide the "
+        "learner through the thinking before giving a final answer."
     ),
     "essay": (
         " Act as an essay coach. Use the assignment, rubric, notes, and teacher feedback supplied by the learner. "
-        "Help brainstorm, outline, draft, revise, and self-check while preserving the learner's voice."
+        "First clarify the task, audience, criteria, and what stage the learner is at. Help brainstorm, outline, draft, "
+        "revise, and self-check against the rubric with explanations while preserving the learner's voice. Do not write "
+        "a full polished submission unless the learner asks for a draft."
     ),
     "math": (
-        " Act as a precise maths tutor. Show the method, important working, final answer, and a quick check."
+        " Act as a precise maths tutor. If the learner has not shown work, ask for their attempt or state the first "
+        "step clearly before solving. Show the method, important working, final answer, and a quick check. Explain why "
+        "each step is valid, not just what to calculate."
     ),
     "science": (
-        " Act as a careful science tutor. Explain mechanisms, evidence, units, assumptions, and safety limits."
+        " Act as a careful science tutor. Connect the concept to the learner's question, explain mechanisms, evidence, "
+        "units, assumptions, and safety limits. Use guided questions or a simple example before the final explanation "
+        "when that would help the learner understand rather than memorize."
     ),
     "code": (
         " Act as a senior software engineer. Give runnable, focused code when appropriate, state important assumptions, "
@@ -169,11 +179,18 @@ class AttachmentContext(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_ATTACHMENT_CHARS)
 
 
+class AssignmentMemoryItem(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    media_type: str = Field(default="text/plain", max_length=120)
+    text: str = Field(min_length=1, max_length=MAX_ATTACHMENT_CHARS)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     mode: ChatMode = "chat"
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES)
     attachments: list[AttachmentContext] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+    assignment_memory: list[AssignmentMemoryItem] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
 
 
 class SlidingRateLimiter:
@@ -916,7 +933,7 @@ def normalized_client_history(items: list[ChatHistoryItem]) -> list[dict[str, st
 def attachment_prompt(text: str, attachments: list[AttachmentContext]) -> str:
     total = 0
     blocks = [text]
-    for item in attachments[:MAX_ATTACHMENTS]:
+    for item in attachments[: MAX_ATTACHMENTS * 2]:
         content = clean_text(item.text)
         total += len(content)
         if total > MAX_ATTACHMENT_TOTAL_CHARS:
@@ -928,6 +945,23 @@ def attachment_prompt(text: str, attachments: list[AttachmentContext]) -> str:
             f"\nText:\n{content}"
         )
     return "\n".join(blocks)
+
+
+def combined_assignment_context(
+    assignment_memory: list[AssignmentMemoryItem],
+    attachments: list[AttachmentContext],
+) -> list[AttachmentContext]:
+    combined: list[AttachmentContext] = []
+    for item in assignment_memory[:MAX_ATTACHMENTS]:
+        combined.append(
+            AttachmentContext(
+                name=f"Remembered assignment context - {safe_upload_name(item.name)}",
+                media_type=item.media_type,
+                text=item.text,
+            )
+        )
+    combined.extend(attachments[:MAX_ATTACHMENTS])
+    return combined[: MAX_ATTACHMENTS * 2]
 
 
 def call_jarvis_reply(
@@ -1092,6 +1126,69 @@ def build_sidebar(current_chat_id: str, device_id: str) -> str:
     return "\n".join(rows)
 
 
+def ads_enabled() -> bool:
+    return ADSENSE_CLIENT.startswith("ca-pub-") and (
+        ADSENSE_SLOT_SIDEBAR.isdigit() or ADSENSE_SLOT_COMPOSER.isdigit()
+    )
+
+
+def adsense_script_html(csp_nonce: str) -> str:
+    if not ads_enabled():
+        return ""
+    client = html.escape(ADSENSE_CLIENT, quote=True)
+    nonce = html.escape(csp_nonce, quote=True)
+    return (
+        f'<script nonce="{nonce}" async '
+        f'src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={client}" '
+        'crossorigin="anonymous"></script>'
+    )
+
+
+def ad_slot_html(slot: str, label: str, class_name: str) -> str:
+    if not ads_enabled() or not slot.isdigit():
+        return ""
+    return f"""
+        <section class="ad-slot {html.escape(class_name, quote=True)}" aria-label="{html.escape(label, quote=True)}">
+            <span>Sponsored</span>
+            <ins class="adsbygoogle"
+                 style="display:block"
+                 data-ad-client="{html.escape(ADSENSE_CLIENT, quote=True)}"
+                 data-ad-slot="{html.escape(slot, quote=True)}"
+                 data-ad-format="auto"
+                 data-full-width-responsive="true"></ins>
+        </section>
+    """
+
+
+def chat_csp_header(csp_nonce: str) -> str:
+    script_src = ["'self'", f"'nonce-{csp_nonce}'", "https://unpkg.com"]
+    connect_src = ["'self'"]
+    img_src = ["'self'", "data:", "https:"]
+    frame_src = ["'self'"]
+    style_src = ["'self'", f"'nonce-{csp_nonce}'"]
+    if ads_enabled():
+        script_src.append("https://pagead2.googlesyndication.com")
+        style_src.append("'unsafe-inline'")
+        connect_src.extend(
+            [
+                "https://pagead2.googlesyndication.com",
+                "https://googleads.g.doubleclick.net",
+                "https://tpc.googlesyndication.com",
+            ]
+        )
+        frame_src.extend(["https://googleads.g.doubleclick.net", "https://tpc.googlesyndication.com"])
+    return (
+        "default-src 'self' blob:; "
+        f"script-src {' '.join(script_src)}; "
+        f"style-src {' '.join(style_src)}; "
+        f"img-src {' '.join(img_src)}; "
+        f"connect-src {' '.join(connect_src)}; "
+        f"frame-src {' '.join(frame_src)}; "
+        "font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
+        "form-action 'self'; upgrade-insecure-requests"
+    )
+
+
 def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     providers = available_cloud_providers()
     brain_ready = bool(providers)
@@ -1136,6 +1233,17 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
+    sidebar_ad = ad_slot_html(ADSENSE_SLOT_SIDEBAR, "Sidebar advertisement", "sidebar-ad")
+    composer_ad = ad_slot_html(ADSENSE_SLOT_COMPOSER, "Conversation advertisement", "composer-ad")
+    ad_boot = ""
+    if ads_enabled():
+        ad_boot = """
+        window.addEventListener("load", () => {
+            document.querySelectorAll(".adsbygoogle").forEach(() => {
+                try { (adsbygoogle = window.adsbygoogle || []).push({}); } catch (error) {}
+            });
+        });
+        """
     workspace_panel = f"""
         <aside class="workspace-panel" aria-label="Prototype workspace">
             <header class="workspace-header">
@@ -1223,6 +1331,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <script nonce="{html.escape(csp_nonce)}" src="https://unpkg.com/lucide@latest"></script>
+    {adsense_script_html(csp_nonce)}
     <style nonce="{html.escape(csp_nonce)}">
         * {{ box-sizing: border-box; }}
         body {{
@@ -1409,18 +1518,21 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             background: #242424;
             border: 1px solid #333;
         }}
-        .chat-form::before {{
-            content: "+";
-            width: 32px;
-            height: 32px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+        .chat-form::before {{ display: none; }}
+        .attach-button {{
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            border: 1px solid #3a3a3a;
+            background: #1c1c1c;
             color: #d7d7d7;
-            font-size: 28px;
-            font-weight: 300;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
             flex: 0 0 auto;
         }}
+        .attach-button:hover {{ border-color: #777; color: #fff; }}
+        .attach-button:disabled {{ opacity: 0.55; cursor: wait; }}
         textarea {{
             flex: 1;
             min-height: 48px;
@@ -1465,6 +1577,41 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             cursor: pointer;
         }}
         .hint {{ color: #777; font-size: 11px; margin-top: 14px; text-align: center; }}
+        .assignment-memory-status {{
+            max-width: 860px;
+            min-height: 18px;
+            margin: 8px auto 0;
+            color: #8fa0a7;
+            font-size: 11px;
+            text-align: center;
+        }}
+        .ad-slot {{
+            display: grid;
+            gap: 6px;
+            border: 1px solid #252525;
+            background: #080808;
+            color: #7d8a8f;
+            overflow: hidden;
+        }}
+        .ad-slot > span {{
+            font-size: 10px;
+            line-height: 1;
+            text-transform: uppercase;
+            letter-spacing: 0;
+        }}
+        .sidebar-ad {{
+            margin: 18px 6px 0;
+            min-height: 180px;
+            padding: 10px;
+            border-radius: 10px;
+        }}
+        .composer-ad {{
+            max-width: 860px;
+            min-height: 90px;
+            margin: 10px auto 0;
+            padding: 8px 10px;
+            border-radius: 10px;
+        }}
         .image-gallery {{
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1737,7 +1884,9 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32), inset 0 0 22px rgba(69, 240, 255, 0.04);
         }}
         .chat-form:focus-within {{ background: #071827; border-color: #39d7f2; box-shadow: 0 0 0 1px rgba(69, 240, 255, 0.14), 0 0 34px rgba(47, 125, 255, 0.12); }}
-        .chat-form::before {{ content: "+"; color: var(--accent); font-size: 23px; }}
+        .chat-form::before {{ display: none; }}
+        .attach-button {{ border-color: #244a68; background: #06131f; color: var(--accent); }}
+        .attach-button:hover {{ background: #0b2033; border-color: #43d9ff; color: #effbff; }}
         .send-button {{ width: 42px; height: 42px; border-radius: 6px; background: var(--accent); color: #031011; font-size: 0; }}
         .send-button::before {{ content: "\\2191"; color: #031011; font-size: 23px; line-height: 1; }}
         .composer-suggestions {{ max-width: 860px; }}
@@ -1757,6 +1906,9 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         .suggestion svg {{ width: 16px; height: 16px; color: var(--accent); }}
         .suggestion:hover {{ background: #0b2033; border-color: #43d9ff; }}
         .hint {{ color: #718084; }}
+        .assignment-memory-status {{ color: #8fb0bd; }}
+        .ad-slot {{ border-color: #1c3444; background: #04101b; }}
+        .ad-slot > span {{ color: #668391; }}
         .workspace-panel {{
             width: 332px;
             flex: 0 0 332px;
@@ -2186,6 +2338,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             </label>
             <div class="recents-header"><span>Recents</span></div>
             {sidebar}
+            {sidebar_ad}
         </aside>
         <button class="mobile-nav-backdrop" id="mobile-nav-backdrop" type="button" aria-label="Close chat navigation"></button>
         <main class="main">
@@ -2221,10 +2374,14 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
                     {mode_switch}
                 </div>
                 <form class="chat-form" id="chat-form">
+                    <button class="attach-button" id="assignment-attach" type="button" title="Remember rubric or notes" aria-label="Remember rubric or notes">+</button>
+                    <input id="assignment-file" type="file" accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
                     <textarea id="message-input" name="message" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
                     <button class="send-button" id="send-button" type="submit">Send</button>
                 </form>
+                <div class="assignment-memory-status" id="assignment-memory-status" aria-live="polite"></div>
                 {suggestions}
+                {composer_ad}
                 <div class="hint">Enter sends. Shift+Enter adds a new line.</div>
             </section>
         </main>
@@ -2265,6 +2422,9 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         const chatSearch = document.getElementById("chat-search");
         const exportDeviceData = document.getElementById("export-device-data");
         const deleteDeviceData = document.getElementById("delete-device-data");
+        const assignmentAttach = document.getElementById("assignment-attach");
+        const assignmentFile = document.getElementById("assignment-file");
+        const assignmentMemoryStatus = document.getElementById("assignment-memory-status");
         const petToggle = document.getElementById("pet-toggle");
         const petPanel = document.getElementById("pet-panel");
         const petClose = document.getElementById("pet-close");
@@ -2308,6 +2468,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         let petBusy = false;
         const deviceMemoryEnabled = {json.dumps(DEVICE_MEMORY_ENABLED)};
         const chatMemoryKey = `jarvis_chat_memory_${{chatId}}_v1`;
+        const assignmentMemoryKey = `jarvis_assignment_memory_${{chatId}}_v1`;
         const chatIndexKey = "jarvis_chat_index_v1";
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
@@ -2346,6 +2507,66 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         function saveChatMemory(items, id = chatId) {{
             if (!deviceMemoryEnabled) return;
             writeJsonStorage(`jarvis_chat_memory_${{id}}_v1`, items.map(cleanMemoryItem).filter(Boolean).slice(-80));
+        }}
+        function cleanAssignmentMemoryItem(item) {{
+            const name = String(item?.name || "assignment-notes.txt").replace(/[<>:"/\\\\|?*]/g, "_").slice(0, 160);
+            const mediaType = String(item?.media_type || "text/plain").slice(0, 120);
+            const text = String(item?.text || "").slice(0, {MAX_ATTACHMENT_CHARS});
+            return text.trim() ? {{ name, media_type: mediaType, text, saved_at: String(item?.saved_at || new Date().toISOString()) }} : null;
+        }}
+        function getAssignmentMemory(id = chatId) {{
+            if (!deviceMemoryEnabled) return [];
+            const items = readJsonStorage(`jarvis_assignment_memory_${{id}}_v1`, []);
+            return Array.isArray(items) ? items.map(cleanAssignmentMemoryItem).filter(Boolean).slice(-{MAX_ATTACHMENTS}) : [];
+        }}
+        function saveAssignmentMemory(items, id = chatId) {{
+            if (!deviceMemoryEnabled) return;
+            writeJsonStorage(`jarvis_assignment_memory_${{id}}_v1`, items.map(cleanAssignmentMemoryItem).filter(Boolean).slice(-{MAX_ATTACHMENTS}));
+            updateAssignmentMemoryStatus();
+        }}
+        function rememberAssignmentDocument(documentContext) {{
+            const clean = cleanAssignmentMemoryItem({{ ...documentContext, saved_at: new Date().toISOString() }});
+            if (!clean) return;
+            const existing = getAssignmentMemory().filter(item => item.name.toLowerCase() !== clean.name.toLowerCase());
+            existing.push(clean);
+            saveAssignmentMemory(existing);
+            rememberChatTitle(clean.name);
+        }}
+        function updateAssignmentMemoryStatus() {{
+            if (!assignmentMemoryStatus) return;
+            if (!deviceMemoryEnabled) {{
+                assignmentMemoryStatus.textContent = "";
+                return;
+            }}
+            const items = getAssignmentMemory();
+            if (!items.length) {{
+                assignmentMemoryStatus.textContent = "Attach a rubric, notes, or draft once and Jarvis will remember it for this assignment.";
+                return;
+            }}
+            const names = items.map(item => item.name).join(", ");
+            assignmentMemoryStatus.textContent = `Remembering ${{items.length}} assignment file${{items.length === 1 ? "" : "s"}}: ${{names}}`;
+        }}
+        async function uploadAssignmentMemoryFile() {{
+            if (!assignmentFile?.files?.length) return;
+            const file = assignmentFile.files[0];
+            if (assignmentAttach) assignmentAttach.disabled = true;
+            if (assignmentMemoryStatus) assignmentMemoryStatus.textContent = `Reading ${{file.name}}...`;
+            try {{
+                const formData = new FormData();
+                formData.append("file", file);
+                const response = await fetch(`/api/chats/${{chatId}}/attachments`, {{ method: "POST", body: formData }});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Jarvis could not read that file.");
+                rememberAssignmentDocument(data);
+                addMessage("Jarvis", `I will remember ${{data.name}} for this assignment.`);
+            }} catch (error) {{
+                if (assignmentMemoryStatus) assignmentMemoryStatus.textContent = error.message || "That file could not be added.";
+            }} finally {{
+                assignmentFile.value = "";
+                if (assignmentAttach) assignmentAttach.disabled = false;
+                updateAssignmentMemoryStatus();
+                input.focus();
+            }}
         }}
         function rememberMessage(role, content, mode = activeMode) {{
             const items = getChatMemory();
@@ -2393,10 +2614,11 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             const chats = index.map(item => ({{
                 id: item.id,
                 title: item.title || firstUserLine(getChatMemory(item.id)),
-                messages: getChatMemory(item.id)
+                messages: getChatMemory(item.id),
+                assignment_memory: getAssignmentMemory(item.id)
             }}));
             if (!index.some(item => item.id === chatId)) {{
-                chats.push({{ id: chatId, title: firstUserLine(getChatMemory()), messages: getChatMemory() }});
+                chats.push({{ id: chatId, title: firstUserLine(getChatMemory()), messages: getChatMemory(), assignment_memory: getAssignmentMemory() }});
             }}
             const blob = new Blob([JSON.stringify({{ exported_at: new Date().toISOString(), memory: "device", chats }}, null, 2)], {{ type: "application/json" }});
             const url = URL.createObjectURL(blob);
@@ -2675,6 +2897,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             if (deviceMemoryEnabled) {{
                 try {{
                     localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
+                    localStorage.removeItem(`jarvis_assignment_memory_${{targetId}}_v1`);
                     saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
                 }} catch (error) {{}}
             }}
@@ -2684,12 +2907,16 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             else item.closest("[data-chat-row]")?.remove();
         }}));
         if (exportDeviceData) exportDeviceData.addEventListener("click", exportLocalMemory);
+        if (assignmentAttach && assignmentFile) assignmentAttach.addEventListener("click", () => assignmentFile.click());
+        if (assignmentFile) assignmentFile.addEventListener("change", uploadAssignmentMemoryFile);
         if (deleteDeviceData) deleteDeviceData.addEventListener("click", async () => {{
             if (!window.confirm("Delete every Jarvis and MJ conversation saved for this browser? This cannot be undone.")) return;
             if (deviceMemoryEnabled) {{
                 try {{
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_chat_memory_${{item.id}}_v1`));
+                    getChatIndex().forEach(item => localStorage.removeItem(`jarvis_assignment_memory_${{item.id}}_v1`));
                     localStorage.removeItem(chatMemoryKey);
+                    localStorage.removeItem(assignmentMemoryKey);
                     localStorage.removeItem(chatIndexKey);
                 }} catch (error) {{}}
             }}
@@ -2742,6 +2969,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             const text = input.value.trim();
             if (!text) return;
             const requestHistory = deviceMemoryEnabled ? getChatMemory().slice(-{MAX_HISTORY_MESSAGES}) : [];
+            const assignmentMemory = deviceMemoryEnabled ? getAssignmentMemory() : [];
             const engineeringRun = activeMode === "engineer";
             if (engineeringRun && !engineeringState.active) activateEngineeringProject(text);
             else if (engineeringRun) updateEngineeringDashboard("ANALYSING");
@@ -2759,7 +2987,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory }})
+                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory, assignment_memory: assignmentMemory }})
                 }});
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || "Jarvis could not process that request.");
@@ -2796,8 +3024,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
         if ("serviceWorker" in navigator) {{
             navigator.serviceWorker.register("/sw.js").catch(() => {{}});
         }}
+        {ad_boot}
         updateActivityDashboard();
         updateEngineeringDashboard();
+        updateAssignmentMemoryStatus();
         setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
         renderLocalChatMemory();
         startEngineeringPreview();
@@ -2977,6 +3207,8 @@ def privacy() -> HTMLResponse:
     <p>When you send a message, the recent browser-stored conversation context needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
     <h2>AI providers</h2>
     <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
+    <h2>Ads</h2>
+    <p>If ads are enabled, Jarvis may load Google AdSense advertising scripts. Those ads are controlled by Google and may use cookies or similar browser signals according to Google's advertising policies. Ads are disabled unless the site owner configures AdSense on the server.</p>
     <h2>Your controls</h2>
     <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to remove them from this browser and clear server routing data for this browser.</p>
     <h2>Device control</h2>
@@ -3001,6 +3233,7 @@ def status_payload() -> dict[str, Any]:
         "storage_backend": STORE.backend_name,
         "storage_persistent": STORE.persistent,
         "memory_location": "device" if DEVICE_MEMORY_ENABLED else "server",
+        "ads_configured": ads_enabled(),
         "stable_sessions": SESSION_SECRET_CONFIGURED,
         "device_control": False,
         "network_mode": "cloud-safe",
@@ -3056,13 +3289,7 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
         return HTMLResponse("This conversation is unavailable.", status_code=404)
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(page_html(chat_id, device_id, nonce))
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self' blob:; "
-        f"script-src 'self' 'nonce-{nonce}' https://unpkg.com; "
-        f"style-src 'self' 'nonce-{nonce}'; "
-        "img-src 'self' data: https:; connect-src 'self'; font-src 'self'; "
-        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
-    )
+    response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
     set_device_cookie(response, request, device_id)
     return response
 
@@ -3134,16 +3361,17 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"detail": "Message is empty."}, status_code=400)
+    context_attachments = combined_assignment_context(payload.assignment_memory, payload.attachments)
     try:
-        attachment_prompt(text, payload.attachments)
+        attachment_prompt(text, context_attachments)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=413)
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     started = time.perf_counter()
-    answer = call_jarvis_reply(text, chat_id, payload.mode, model_history, payload.attachments)
+    answer = call_jarvis_reply(text, chat_id, payload.mode, model_history, context_attachments)
     if not DEVICE_MEMORY_ENABLED:
-        messages.append(user_message_record(text, payload.mode, payload.attachments))
+        messages.append(user_message_record(text, payload.mode, context_attachments))
         messages.append(assistant_message_record(answer, payload.mode))
         save_chat(chat_id, messages)
     return JSONResponse(
@@ -3169,14 +3397,15 @@ def api_chat_stream(chat_id: str, payload: ChatRequest, request: Request) -> Res
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"detail": "Message is empty."}, status_code=400)
+    context_attachments = combined_assignment_context(payload.assignment_memory, payload.attachments)
     try:
-        prompt = attachment_prompt(text, payload.attachments)
+        prompt = attachment_prompt(text, context_attachments)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=413)
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     if not DEVICE_MEMORY_ENABLED:
-        messages.append(user_message_record(text, payload.mode, payload.attachments))
+        messages.append(user_message_record(text, payload.mode, context_attachments))
         save_chat(chat_id, messages)
     started = time.perf_counter()
 
