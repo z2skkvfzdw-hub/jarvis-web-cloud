@@ -2530,15 +2530,14 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
     <script nonce="{html.escape(csp_nonce)}">
         const chatId = {json.dumps(chat_id)};
         const jarvisOneTributes = [
-    "In honnor of Jarvis 1.0 ts ain't working and never will cuz i'm to lazy",
-    "Jarvis 1.0 memorial button: still broken, still iconic.",
-    "This button failed in 1.0 and we kept it for historical accuracy.",
-    "New chat? Absolutely not. Tradition must be respected."
-];
-
-function randomJarvisOneTribute() {
-    return jarvisOneTributes[Math.floor(Math.random() * jarvisOneTributes.length)];
-}
+            "In honnor of Jarvis 1.0 ts ain't working and never will cuz i'm to lazy",
+            "Jarvis 1.0 memorial button: still broken, still iconic.",
+            "This button failed in 1.0 and we kept it for historical accuracy.",
+            "New chat? Absolutely not. Tradition must be respected."
+        ];
+        function randomJarvisOneTribute() {{
+            return jarvisOneTributes[Math.floor(Math.random() * jarvisOneTributes.length)];
+        }}
         const chat = document.getElementById("chat");
         const messages = document.getElementById("messages");
         const form = document.getElementById("chat-form");
@@ -2583,11 +2582,12 @@ function randomJarvisOneTribute() {
         const jarvisOneToast = document.getElementById("jarvis-one-toast");
         let jarvisOneToastTimer = null;
         function showJarvisOneTribute() {{
+            const tributeMessage = randomJarvisOneTribute();
             if (!jarvisOneToast) {{
-                window.alert(randomJarvisOneTribute());
+                window.alert(tributeMessage);
                 return;
             }}
-            jarvisOneToast.textContent = randomJarvisOneTribute();
+            jarvisOneToast.textContent = tributeMessage;
             jarvisOneToast.classList.add("show");
             window.clearTimeout(jarvisOneToastTimer);
             jarvisOneToastTimer = window.setTimeout(() => jarvisOneToast.classList.remove("show"), 4200);
