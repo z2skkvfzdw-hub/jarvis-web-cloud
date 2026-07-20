@@ -43,8 +43,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.7.0"
-CACHE_VERSION = "jarvis-ai-1-7-0"
+APP_VERSION = "1.7.1"
+CACHE_VERSION = "jarvis-ai-1-7-1"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -2428,8 +2428,29 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         .pet-form input:focus {{ border-color: var(--accent); }}
         .pet-form button {{ width: 40px; height: 40px; padding: 0; border: 0; border-radius: 6px; background: var(--accent); color: #031011; cursor: pointer; font-size: 18px; }}
         .pet-form button:disabled {{ opacity: 0.5; cursor: wait; }}
+        .jarvis-one-toast {{
+            position: fixed;
+            left: 50%;
+            bottom: 92px;
+            z-index: 1400;
+            width: min(560px, calc(100vw - 28px));
+            padding: 13px 15px;
+            border: 1px solid #2a789a;
+            border-radius: 8px;
+            background: #071827;
+            color: #f4fbff;
+            box-shadow: 0 18px 54px rgba(0, 0, 0, 0.48), 0 0 24px rgba(69, 240, 255, 0.12);
+            font-size: 14px;
+            line-height: 1.45;
+            text-align: center;
+            transform: translate(-50%, 18px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 160ms ease, transform 160ms ease;
+        }}
+        .jarvis-one-toast.show {{ opacity: 1; transform: translate(-50%, 0); }}
         @media (max-width:1240px) {{ .pet-panel {{ right: 16px; }} }}
-        @media (max-width:760px) {{ .pet-toggle {{ width: 34px; height: 34px; flex-basis: 34px; }} .pet-panel {{ top: 58px; right: 10px; left: 10px; width: auto; height: min(520px, calc(100vh - 76px)); }} }}
+        @media (max-width:760px) {{ .pet-toggle {{ width: 34px; height: 34px; flex-basis: 34px; }} .pet-panel {{ top: 58px; right: 10px; left: 10px; width: auto; height: min(520px, calc(100vh - 76px)); }} .jarvis-one-toast {{ bottom: 76px; font-size: 13px; }} }}
     </style>
 </head>
 <body class="guest-version">
@@ -2505,8 +2526,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         </main>
         {workspace_panel}
     </div>
+    <div class="jarvis-one-toast" id="jarvis-one-toast" role="status" aria-live="polite"></div>
     <script nonce="{html.escape(csp_nonce)}">
         const chatId = {json.dumps(chat_id)};
+        const jarvisOneTribute = "In honnor of Jarvis 1.0 ts ain't working and never will cuz i'm to lazy";
         const chat = document.getElementById("chat");
         const messages = document.getElementById("messages");
         const form = document.getElementById("chat-form");
@@ -2548,6 +2571,18 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         const petClose = document.getElementById("pet-close");
         const petMessages = document.getElementById("pet-messages");
         const petForm = document.getElementById("pet-form");
+        const jarvisOneToast = document.getElementById("jarvis-one-toast");
+        let jarvisOneToastTimer = null;
+        function showJarvisOneTribute() {{
+            if (!jarvisOneToast) {{
+                window.alert(jarvisOneTribute);
+                return;
+            }}
+            jarvisOneToast.textContent = jarvisOneTribute;
+            jarvisOneToast.classList.add("show");
+            window.clearTimeout(jarvisOneToastTimer);
+            jarvisOneToastTimer = window.setTimeout(() => jarvisOneToast.classList.remove("show"), 4200);
+        }}
         function setChatMode(mode, focusInput = true) {{
             if (!modeConfig[mode]) return;
             activeMode = mode;
@@ -3027,6 +3062,11 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         if (exportDeviceData) exportDeviceData.addEventListener("click", exportLocalMemory);
         if (assignmentAttach && assignmentFile) assignmentAttach.addEventListener("click", () => assignmentFile.click());
         if (assignmentFile) assignmentFile.addEventListener("change", uploadAssignmentMemoryFile);
+        document.querySelectorAll('form[action="/new"]').forEach(newChatForm => newChatForm.addEventListener("submit", event => {{
+            event.preventDefault();
+            closeMobileNav();
+            showJarvisOneTribute();
+        }}));
         if (deleteDeviceData) deleteDeviceData.addEventListener("click", async () => {{
             if (!window.confirm("Delete every Jarvis and MJ conversation saved for this browser? This cannot be undone.")) return;
             if (deviceMemoryEnabled) {{
