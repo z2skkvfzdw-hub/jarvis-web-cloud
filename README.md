@@ -34,6 +34,9 @@ DATABASE_URL=<private PostgreSQL connection string>
 JARVIS_ADSENSE_CLIENT=ca-pub-xxxxxxxxxxxxxxxx
 JARVIS_ADSENSE_SLOT_SIDEBAR=<AdSense slot id>
 JARVIS_ADSENSE_SLOT_COMPOSER=<AdSense slot id>
+JARVIS_GOOGLE_CLIENT_ID=<Google OAuth client id>
+JARVIS_GOOGLE_CLIENT_SECRET=<Google OAuth client secret>
+JARVIS_GOOGLE_REDIRECT_URI=https://jarvis-web-cloud.onrender.com/auth/google/callback
 ```
 
 `OPENROUTER_API_KEY` and `JARVIS_OPENROUTER_MODEL=openrouter/free`
@@ -44,10 +47,14 @@ main chat memory is stored in the user's browser, so Render does not need Postgr
 public chat history. `DATABASE_URL` is still useful for server-owned features later.
 The `JARVIS_ADSENSE_*` settings are optional. Ads stay disabled unless a valid
 AdSense client id and at least one numeric slot id are configured.
+The `JARVIS_GOOGLE_*` settings are optional. Google sign-in stays hidden unless
+both the client id and client secret are configured. The OAuth redirect URI in
+Google Cloud must exactly match `/auth/google/callback` on the public Render URL.
 
 ## Public capabilities
 
 - Anonymous, device-owned chat history stored in the user's browser
+- Optional Google sign-in for account-owned chat routing across devices
 - Nine chat modes backed by NVIDIA, with optional OpenRouter fallback
 - In-memory document extraction for PDF, DOCX, PPTX, text, code, CSV, JSON, and Markdown files
 - Streaming response endpoint for chat clients that want incremental output

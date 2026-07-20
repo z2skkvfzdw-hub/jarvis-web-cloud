@@ -19,6 +19,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlencode
 from xml.etree import ElementTree
 
 import bleach
@@ -42,8 +43,8 @@ except Exception:
 
 
 APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.6.1"
-CACHE_VERSION = "jarvis-ai-1-6-1"
+APP_VERSION = "1.7.0"
+CACHE_VERSION = "jarvis-ai-1-7-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -123,12 +124,20 @@ DEVICE_MEMORY_ENABLED = os.environ.get("JARVIS_DEVICE_MEMORY", "true").lower() i
 RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("JARVIS_RATE_LIMIT_REQUESTS", "30")))
 RATE_LIMIT_SECONDS = max(10, int(os.environ.get("JARVIS_RATE_LIMIT_SECONDS", "600")))
 DEVICE_COOKIE = "jarvis_cloud_device"
+AUTH_COOKIE = "jarvis_cloud_auth"
+OAUTH_STATE_COOKIE = "jarvis_google_oauth_state"
 DEVICE_COOKIE_MAX_AGE = max(3600, int(os.environ.get("JARVIS_SESSION_MAX_AGE", str(60 * 60 * 24 * 30))))
 SESSION_SECRET_CONFIGURED = bool(os.environ.get("JARVIS_SESSION_SECRET", "").strip())
 SESSION_SECRET = (
     os.environ.get("JARVIS_SESSION_SECRET", "").strip() or secrets.token_urlsafe(48)
 ).encode("utf-8")
 PUBLIC_ORIGIN = os.environ.get("JARVIS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+GOOGLE_CLIENT_ID = os.environ.get("JARVIS_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("JARVIS_GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URI = os.environ.get("JARVIS_GOOGLE_REDIRECT_URI", "").strip()
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 STORE = build_store(DATA_DIR)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -361,12 +370,81 @@ def verified_device_cookie(value: str) -> str | None:
     return device_id
 
 
+def google_login_configured() -> bool:
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+
+def account_device_id(google_subject: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"jarvis-google:{google_subject}"))
+
+
+def _b64_json(data: dict[str, Any]) -> str:
+    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _unb64_json(value: str) -> dict[str, Any]:
+    padded = value + ("=" * (-len(value) % 4))
+    decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    payload = json.loads(decoded)
+    return payload if isinstance(payload, dict) else {}
+
+
+def signed_auth_cookie(profile: dict[str, Any]) -> str:
+    subject = str(profile.get("sub", "")).strip()
+    if not subject:
+        raise ValueError("Google account is missing its stable subject identifier")
+    payload = {
+        "sub": subject,
+        "email": str(profile.get("email", "")).strip()[:240],
+        "name": str(profile.get("name", "")).strip()[:160],
+        "iat": int(time.time()),
+    }
+    raw = _b64_json(payload)
+    return f"{raw}.{_signature(raw)}"
+
+
+def verified_auth_cookie(value: str) -> dict[str, Any] | None:
+    try:
+        raw, signature = value.rsplit(".", 1)
+    except ValueError:
+        return None
+    if not raw or not hmac.compare_digest(signature, _signature(raw)):
+        return None
+    try:
+        payload = _unb64_json(raw)
+        issued_at = int(payload.get("iat", 0))
+    except Exception:
+        return None
+    age = int(time.time()) - issued_at
+    if age < -300 or age > DEVICE_COOKIE_MAX_AGE:
+        return None
+    subject = str(payload.get("sub", "")).strip()
+    if not subject:
+        return None
+    return {
+        "sub": subject,
+        "email": str(payload.get("email", "")).strip(),
+        "name": str(payload.get("name", "")).strip(),
+        "iat": issued_at,
+    }
+
+
+def current_user(request: Request) -> dict[str, Any] | None:
+    return verified_auth_cookie(request.cookies.get(AUTH_COOKIE, "").strip())
+
+
 def device_id_from_request(request: Request) -> str:
+    profile = current_user(request)
+    if profile:
+        return account_device_id(profile["sub"])
     current = request.cookies.get(DEVICE_COOKIE, "").strip()
     return verified_device_cookie(current) or str(uuid.uuid4())
 
 
 def set_device_cookie(response: Response, request: Request, device_id: str) -> None:
+    if current_user(request):
+        return
     secure = request_origin(request).startswith("https://")
     response.set_cookie(
         DEVICE_COOKIE,
@@ -376,6 +454,38 @@ def set_device_cookie(response: Response, request: Request, device_id: str) -> N
         secure=secure,
         samesite="strict",
     )
+
+
+def set_auth_cookie(response: Response, request: Request, profile: dict[str, Any]) -> None:
+    secure = request_origin(request).startswith("https://")
+    response.set_cookie(
+        AUTH_COOKIE,
+        signed_auth_cookie(profile),
+        max_age=DEVICE_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+    )
+
+
+def google_redirect_uri(request: Request) -> str:
+    return GOOGLE_REDIRECT_URI or f"{request_origin(request)}/auth/google/callback"
+
+
+def auth_status_html(profile: dict[str, Any] | None) -> str:
+    if profile:
+        label = profile.get("name") or profile.get("email") or "Google account"
+        safe_label = html.escape(str(label), quote=True)
+        return f'<span class="privacy-state signed-in" title="{safe_label}">{safe_label}</span>'
+    return '<span class="privacy-state">Anonymous</span>'
+
+
+def auth_nav_html(profile: dict[str, Any] | None) -> str:
+    if profile:
+        return '<a class="nav-item" href="/logout"><span class="nav-icon">&#8634;</span><span>Sign out</span></a>'
+    if google_login_configured():
+        return '<a class="nav-item" href="/login/google"><span class="nav-icon">G</span><span>Sign in with Google</span></a>'
+    return ""
 
 
 def client_rate_key(request: Request, device_id: str) -> str:
@@ -1193,7 +1303,7 @@ def chat_csp_header(csp_nonce: str) -> str:
     )
 
 
-def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
+def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, Any] | None = None) -> str:
     providers = available_cloud_providers()
     brain_ready = bool(providers)
     brain_state = "ONLINE" if brain_ready else "SETUP REQUIRED"
@@ -1237,6 +1347,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
     </div>
     """
     sidebar = build_sidebar(chat_id, device_id)
+    auth_status = auth_status_html(profile)
+    auth_nav = auth_nav_html(profile)
     sidebar_ad = ad_slot_html(ADSENSE_SLOT_SIDEBAR, "Sidebar advertisement", "sidebar-ad")
     composer_ad = ad_slot_html(ADSENSE_SLOT_COMPOSER, "Conversation advertisement", "composer-ad")
     ad_boot = ""
@@ -1423,7 +1535,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
             cursor: pointer;
         }}
         .nav-item.danger {{ color: #ffb4b4; }}
-        .privacy-state {{ color: #8fa9b8; font-size: 11px; }}
+        .privacy-state {{ color: #8fa9b8; font-size: 11px; max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .privacy-state.signed-in {{ color: var(--signal); }}
         .chat-search {{ display: block; padding: 0 6px 14px; }}
         .chat-search[hidden] {{ display: none; }}
         .chat-search input {{ width: 100%; height: 38px; border: 1px solid #245a82; border-radius: 7px; background: #07111d; color: #eef8ff; padding: 0 10px; }}
@@ -2327,10 +2440,11 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str) -> str:
                     <span class="brand-mark">J</span>
                     <span class="brand-name">{APP_TITLE}</span>
                 </a>
-                <span class="privacy-state">Anonymous</span>
+                {auth_status}
             </div>
             <nav class="sidebar-nav" aria-label="Jarvis navigation">
                 <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
+                {auth_nav}
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
                 <a class="nav-item" href="/api/device/export" id="export-device-data"><span class="nav-icon">&#8681;</span><span>Export my data</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
@@ -3204,9 +3318,9 @@ def privacy() -> HTMLResponse:
 <body><main>
     <p><a href="/">Back to Jarvis</a></p>
     <h1>Privacy</h1>
-    <p>Jarvis is an anonymous public chat service. It does not require an account. Main chat memory is stored in this browser so this device can reopen and continue its conversations.</p>
+    <p>Jarvis can be used anonymously, and Google sign-in can be enabled by the site owner. Anonymous chats belong to this browser. Signed-in chats belong to the Google account identifier returned by Google, so the same account can reopen its Jarvis conversations on another device.</p>
     <h2>What is stored</h2>
-    <p>Main chat text and chat titles are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. Jarvis does not request your camera, microphone, location, contacts, or local computer files.</p>
+    <p>Main chat text and chat titles are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
     <h2>AI requests</h2>
     <p>When you send a message, the recent browser-stored conversation context needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
     <h2>AI providers</h2>
@@ -3214,7 +3328,7 @@ def privacy() -> HTMLResponse:
     <h2>Ads</h2>
     <p>If ads are enabled, Jarvis may load Google AdSense advertising scripts. Those ads are controlled by Google and may use cookies or similar browser signals according to Google's advertising policies. Ads are disabled unless the site owner configures AdSense on the server.</p>
     <h2>Your controls</h2>
-    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to remove them from this browser and clear server routing data for this browser.</p>
+    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to remove them from this browser and clear server routing data for this browser or signed-in account. Use <strong>Sign out</strong> to clear the Google session cookie on this browser.</p>
     <h2>Device control</h2>
     <p>This public version cannot open apps, read files, or control the computer running your private Jarvis installation.</p>
 </main></body></html>"""
@@ -3238,6 +3352,7 @@ def status_payload() -> dict[str, Any]:
         "storage_persistent": STORE.persistent,
         "memory_location": "device" if DEVICE_MEMORY_ENABLED else "server",
         "ads_configured": ads_enabled(),
+        "google_login_configured": google_login_configured(),
         "stable_sessions": SESSION_SECRET_CONFIGURED,
         "device_control": False,
         "network_mode": "cloud-safe",
@@ -3259,6 +3374,96 @@ def ready() -> JSONResponse:
 @app.get("/status")
 def status() -> JSONResponse:
     return JSONResponse(status_payload())
+
+
+@app.get("/login/google")
+def login_google(request: Request) -> Response:
+    if not google_login_configured():
+        return HTMLResponse("Google login is not configured for this Jarvis server.", status_code=404)
+    state = secrets.token_urlsafe(32)
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": google_redirect_uri(request),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+    }
+    response = RedirectResponse(url=f"{GOOGLE_AUTH_URL}?{urlencode(params)}", status_code=303)
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state,
+        max_age=600,
+        httponly=True,
+        secure=request_origin(request).startswith("https://"),
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/google/callback")
+def google_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
+    if error:
+        return HTMLResponse("Google sign-in was cancelled.", status_code=400)
+    if not google_login_configured():
+        return HTMLResponse("Google login is not configured for this Jarvis server.", status_code=404)
+    expected_state = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    if not state or not expected_state or not hmac.compare_digest(state, expected_state):
+        return HTMLResponse("Google sign-in state did not match. Please try again.", status_code=400)
+    if not code:
+        return HTMLResponse("Google did not return an authorization code.", status_code=400)
+    try:
+        token_response = requests.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": google_redirect_uri(request),
+                "grant_type": "authorization_code",
+            },
+            timeout=10,
+        )
+        token_response.raise_for_status()
+        id_token = str(token_response.json().get("id_token", "")).strip()
+        if not id_token:
+            raise ValueError("Google did not return an ID token")
+        profile_response = requests.get(GOOGLE_TOKENINFO_URL, params={"id_token": id_token}, timeout=10)
+        profile_response.raise_for_status()
+        google_profile = profile_response.json()
+    except Exception:
+        LOGGER.exception("Google sign-in failed")
+        response = HTMLResponse("Google sign-in failed. Please try again.", status_code=502)
+        response.delete_cookie(OAUTH_STATE_COOKIE)
+        return response
+    if google_profile.get("aud") != GOOGLE_CLIENT_ID:
+        response = HTMLResponse("Google sign-in token was not issued for this Jarvis app.", status_code=400)
+        response.delete_cookie(OAUTH_STATE_COOKIE)
+        return response
+    subject = str(google_profile.get("sub", "")).strip()
+    if not subject:
+        response = HTMLResponse("Google sign-in did not include an account id.", status_code=400)
+        response.delete_cookie(OAUTH_STATE_COOKIE)
+        return response
+    profile = {
+        "sub": subject,
+        "email": str(google_profile.get("email", "")).strip(),
+        "name": str(google_profile.get("name", "")).strip(),
+    }
+    response = RedirectResponse(url="/", status_code=303)
+    set_auth_cookie(response, request, profile)
+    response.delete_cookie(OAUTH_STATE_COOKIE)
+    response.delete_cookie(DEVICE_COOKIE)
+    return response
+
+
+@app.get("/logout")
+def logout() -> RedirectResponse:
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie(AUTH_COOKIE)
+    response.delete_cookie(OAUTH_STATE_COOKIE)
+    response.delete_cookie(DEVICE_COOKIE)
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3292,7 +3497,7 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
     if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return HTMLResponse("This conversation is unavailable.", status_code=404)
     nonce = secrets.token_urlsafe(18)
-    response = HTMLResponse(page_html(chat_id, device_id, nonce))
+    response = HTMLResponse(page_html(chat_id, device_id, nonce, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
     set_device_cookie(response, request, device_id)
     return response
