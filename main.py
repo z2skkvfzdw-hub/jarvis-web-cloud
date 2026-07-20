@@ -54,6 +54,7 @@ DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
 ADSENSE_CLIENT = os.environ.get("JARVIS_ADSENSE_CLIENT", "").strip()
 ADSENSE_SLOT_SIDEBAR = os.environ.get("JARVIS_ADSENSE_SLOT_SIDEBAR", "").strip()
 ADSENSE_SLOT_COMPOSER = os.environ.get("JARVIS_ADSENSE_SLOT_COMPOSER", "").strip()
+ENABLE_GROQ = os.environ.get("JARVIS_ENABLE_GROQ", "false").lower() in {"1", "true", "yes", "on"}
 ChatMode = Literal["chat", "study", "essay", "math", "science", "code", "research", "create", "engineer"]
 CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "essay", "math", "science", "code", "research", "create", "engineer")
 MODE_INSTRUCTIONS: dict[ChatMode, str] = {
@@ -469,7 +470,10 @@ def cloud_key(provider: str) -> str:
 
 
 def available_cloud_providers() -> list[str]:
-    configured = [provider for provider in ("nvidia", "groq", "openrouter") if cloud_key(provider)]
+    allowed = ["nvidia", "openrouter"]
+    if ENABLE_GROQ:
+        allowed.append("groq")
+    configured = [provider for provider in allowed if cloud_key(provider)]
     requested = [
         item.strip().lower()
         for item in os.environ.get("JARVIS_PROVIDER_CHAIN", "").split(",")
@@ -477,7 +481,7 @@ def available_cloud_providers() -> list[str]:
     ]
     preferred = os.environ.get("JARVIS_CLOUD_PROVIDER", "").strip().lower()
     order = requested or ([preferred] if preferred else [])
-    order.extend(("nvidia", "groq", "openrouter"))
+    order.extend(allowed)
     return [provider for index, provider in enumerate(order) if provider in configured and provider not in order[:index]]
 
 
