@@ -42,9 +42,9 @@ except Exception:
     DDGS = None
 
 
-APP_TITLE = "Jarvis.Ai"
-APP_VERSION = "1.7.1"
-CACHE_VERSION = "jarvis-ai-1-7-1"
+APP_TITLE = "Jarivs"
+APP_VERSION = "1.7.2"
+CACHE_VERSION = "jarvis-ai-1-7-2"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -1443,7 +1443,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#000000">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="Jarvis">
+    <meta name="apple-mobile-web-app-title" content="{APP_TITLE}">
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <script nonce="{html.escape(csp_nonce)}" src="https://unpkg.com/lucide@latest"></script>
@@ -2281,7 +2281,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             }}
             .title {{ font-size: 0; }}
             .title::after {{
-                content: "Jarvis.Ai";
+                content: "Jarivs";
                 color: #f4ffff;
                 font-size: 14px;
                 font-weight: 700;
@@ -3211,8 +3211,8 @@ def manifest() -> JSONResponse:
     return JSONResponse(
         {
             "name": APP_TITLE,
-            "short_name": "Jarvis",
-            "description": "Cloud-safe Jarvis assistant.",
+            "short_name": "Jarivs",
+            "description": "Cloud-safe Jarivs assistant.",
             "start_url": "/",
             "scope": "/",
             "display": "standalone",
@@ -3284,7 +3284,7 @@ def offline_page() -> HTMLResponse:
 </head>
 <body>
     <main>
-        <h1>Jarvis.AI is offline.</h1>
+        <h1>Jarivs is offline.</h1>
         <p>The app shell loaded, but the cloud server is not reachable from this network right now. Reconnect and try again.</p>
         <a href="/">Try again</a>
     </main>
