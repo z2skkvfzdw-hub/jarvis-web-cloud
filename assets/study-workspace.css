@@ -1,0 +1,730 @@
+:root {
+    color-scheme: dark;
+    --bg: #080b0b;
+    --panel: #0d1212;
+    --panel-2: #111818;
+    --line: #293536;
+    --line-strong: #405355;
+    --text: #f0f5f3;
+    --muted: #98a6a3;
+    --accent: #57e4ec;
+    --signal: #a5ef84;
+    --warm: #ffd178;
+    --danger: #ff8d94;
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    min-width: 100%;
+    min-height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+}
+
+body {
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button,
+.button,
+.icon-link {
+    min-height: 38px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    background: #111919;
+    color: var(--text);
+}
+
+button,
+.button,
+.icon-link {
+    cursor: pointer;
+}
+
+button:hover,
+button:focus-visible,
+.button:hover,
+.button:focus-visible,
+.icon-link:hover,
+.icon-link:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.study-bar {
+    height: 66px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+    background: #0a0e0e;
+}
+
+.icon-link,
+.icon-button {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    text-decoration: none;
+    font-size: 19px;
+}
+
+.brand-block {
+    min-width: 160px;
+    display: grid;
+    gap: 2px;
+}
+
+.brand-block span,
+.pane-heading span {
+    color: var(--muted);
+    font: 10px/1.2 Consolas, monospace;
+    text-transform: uppercase;
+}
+
+.brand-block strong {
+    font-size: 15px;
+}
+
+.profile-picker {
+    min-width: 180px;
+    max-width: 290px;
+    flex: 1;
+    display: grid;
+    gap: 3px;
+}
+
+.profile-picker span {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.profile-picker select {
+    width: 100%;
+    height: 32px;
+    padding: 0 30px 0 9px;
+}
+
+.save-state {
+    margin-left: auto;
+    color: var(--signal);
+    font: 11px/1.2 Consolas, monospace;
+    white-space: nowrap;
+}
+
+.owner-label {
+    max-width: 130px;
+    overflow: hidden;
+    color: var(--muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 13px;
+    text-decoration: none;
+}
+
+.study-layout {
+    height: calc(100vh - 66px);
+    display: grid;
+    grid-template-columns: minmax(250px, 280px) minmax(440px, 1fr) minmax(270px, 310px);
+    overflow: hidden;
+}
+
+.profile-pane,
+.progress-pane,
+.tool-pane {
+    min-width: 0;
+    min-height: 0;
+}
+
+.profile-pane,
+.progress-pane {
+    overflow-y: auto;
+    background: var(--panel);
+}
+
+.profile-pane {
+    padding: 20px 17px 30px;
+    border-right: 1px solid var(--line);
+}
+
+.progress-pane {
+    padding: 20px 17px 30px;
+    border-left: 1px solid var(--line);
+}
+
+.pane-heading {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 18px;
+}
+
+.pane-heading strong {
+    font-size: 17px;
+}
+
+.profile-pane label,
+.tool-context label,
+.generator-controls label {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 14px;
+    color: #cbd5d3;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+input,
+textarea,
+select {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    outline: none;
+    background: #090e0e;
+    color: var(--text);
+}
+
+input,
+select {
+    height: 40px;
+    padding: 0 10px;
+}
+
+textarea {
+    resize: vertical;
+    padding: 10px;
+    line-height: 1.5;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+    border-color: var(--accent);
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: #667472;
+}
+
+.danger-link,
+.text-button {
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--danger);
+    font-size: 11px;
+}
+
+.tool-pane {
+    overflow-y: auto;
+    background: #090d0d;
+}
+
+.tool-header {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    border-bottom: 1px solid var(--line);
+    background: rgba(9, 13, 13, 0.97);
+}
+
+.tool-tabs {
+    height: 58px;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 0 22px;
+}
+
+.tool-tab {
+    min-width: 104px;
+    padding: 0 16px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--muted);
+}
+
+.tool-tab.active {
+    border-bottom-color: var(--accent);
+    color: var(--text);
+}
+
+.tool-context {
+    display: grid;
+    grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.3fr);
+    gap: 16px;
+    padding: 20px 24px 6px;
+    border-bottom: 1px solid var(--line);
+}
+
+.tool-context textarea {
+    min-height: 88px;
+    max-height: 220px;
+}
+
+.tool-view {
+    padding: 20px 24px 50px;
+}
+
+.generator-controls {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(150px, 0.65fr) auto;
+    align-items: end;
+    gap: 12px;
+}
+
+.generator-controls.compact {
+    grid-template-columns: 130px auto;
+    justify-content: start;
+}
+
+.generator-controls label {
+    margin: 0;
+}
+
+.generator-controls button {
+    height: 40px;
+    padding: 0 16px;
+}
+
+.primary {
+    border-color: #bbf8ff;
+    background: #bbf8ff;
+    color: #071111;
+    font-weight: 750;
+}
+
+.tool-status {
+    min-height: 25px;
+    margin-top: 13px;
+    color: var(--warm);
+    font-size: 12px;
+}
+
+.plan-header {
+    margin: 9px 0 20px;
+    padding: 17px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+
+.plan-header h2 {
+    margin: 0 0 5px;
+    font-size: 21px;
+}
+
+.plan-header p {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.55;
+}
+
+.plan-sessions {
+    display: grid;
+}
+
+.plan-session {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    gap: 11px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.plan-session input {
+    width: 20px;
+    height: 20px;
+    margin: 2px 0 0;
+    accent-color: var(--signal);
+}
+
+.session-copy h3 {
+    margin: 0 0 5px;
+    font-size: 15px;
+}
+
+.session-copy p {
+    margin: 0 0 8px;
+    color: #c0ccca;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.session-copy ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.session-minutes {
+    color: var(--signal);
+    font: 11px/1.4 Consolas, monospace;
+    white-space: nowrap;
+}
+
+.flashcard-output {
+    max-width: 720px;
+    margin: 8px auto 0;
+}
+
+.deck-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 9px;
+    color: var(--muted);
+    font: 11px/1.2 Consolas, monospace;
+}
+
+.flashcard {
+    min-height: 290px;
+    display: grid;
+    place-items: center;
+    padding: 36px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    background: var(--panel-2);
+    text-align: center;
+    cursor: pointer;
+}
+
+.flashcard .card-label {
+    color: var(--accent);
+    font: 10px/1.2 Consolas, monospace;
+    text-transform: uppercase;
+}
+
+.flashcard strong {
+    display: block;
+    margin: 16px 0 8px;
+    font-size: clamp(20px, 3vw, 30px);
+    line-height: 1.35;
+}
+
+.flashcard p {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.55;
+}
+
+.deck-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.deck-actions button {
+    padding: 0 10px;
+}
+
+.rate-again {
+    color: var(--danger);
+}
+
+.rate-hard {
+    color: var(--warm);
+}
+
+.rate-known {
+    color: var(--signal);
+}
+
+.deck-finished {
+    padding: 50px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    text-align: center;
+}
+
+.deck-finished strong {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 22px;
+}
+
+.deck-finished span {
+    color: var(--muted);
+}
+
+.quiz-question {
+    padding: 20px 0;
+    border-top: 1px solid var(--line);
+}
+
+.quiz-question h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+.quiz-options {
+    display: grid;
+    gap: 7px;
+}
+
+.quiz-option {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: #d5dfdd;
+    cursor: pointer;
+}
+
+.quiz-option:hover {
+    border-color: var(--line-strong);
+}
+
+.quiz-option input {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.quiz-option.correct {
+    border-color: #598b4d;
+    background: rgba(165, 239, 132, 0.08);
+}
+
+.quiz-option.incorrect {
+    border-color: #85434a;
+    background: rgba(255, 141, 148, 0.07);
+}
+
+.question-explanation {
+    margin: 10px 0 0;
+    padding: 11px 12px;
+    border-left: 2px solid var(--accent);
+    color: #c8d4d1;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.quiz-submit {
+    margin-top: 16px;
+    padding: 0 18px;
+}
+
+.quiz-score {
+    margin-top: 15px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+    color: var(--signal);
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.progress-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.progress-stats > div {
+    min-height: 74px;
+    padding: 11px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #0a1010;
+}
+
+.progress-stats span,
+.progress-stats strong {
+    display: block;
+}
+
+.progress-stats span {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.progress-stats strong {
+    margin-top: 8px;
+    color: var(--signal);
+    font-size: 18px;
+}
+
+.activity-section {
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+}
+
+.section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+.activity-list {
+    display: grid;
+}
+
+.activity-item {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.activity-item strong,
+.activity-item span {
+    display: block;
+}
+
+.activity-item strong {
+    font-size: 12px;
+}
+
+.activity-item span {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.activity-empty {
+    padding: 12px 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+@media (max-width: 1100px) {
+    body {
+        overflow: auto;
+    }
+
+    .study-layout {
+        height: auto;
+        min-height: calc(100vh - 66px);
+        grid-template-columns: minmax(240px, 280px) minmax(420px, 1fr);
+        overflow: visible;
+    }
+
+    .profile-pane,
+    .progress-pane,
+    .tool-pane {
+        overflow: visible;
+    }
+
+    .progress-pane {
+        grid-column: 1 / -1;
+        border-top: 1px solid var(--line);
+        border-left: 0;
+    }
+
+    .progress-stats {
+        grid-template-columns: repeat(6, minmax(100px, 1fr));
+    }
+}
+
+@media (max-width: 760px) {
+    .study-bar {
+        height: auto;
+        min-height: 64px;
+        flex-wrap: wrap;
+        padding: 10px 12px;
+    }
+
+    .brand-block,
+    .save-state,
+    .owner-label {
+        display: none;
+    }
+
+    .profile-picker {
+        min-width: 130px;
+    }
+
+    .study-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .profile-pane,
+    .progress-pane {
+        border: 0;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .tool-context,
+    .generator-controls,
+    .generator-controls.compact {
+        grid-template-columns: 1fr;
+    }
+
+    .tool-tabs {
+        height: 52px;
+        padding: 0 10px;
+    }
+
+    .tool-tab {
+        min-width: 0;
+        flex: 1;
+        padding: 0 8px;
+    }
+
+    .tool-context,
+    .tool-view {
+        padding-left: 15px;
+        padding-right: 15px;
+    }
+
+    .progress-pane {
+        grid-column: auto;
+    }
+
+    .progress-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .flashcard {
+        min-height: 250px;
+        padding: 24px 18px;
+    }
+}

@@ -43,8 +43,8 @@ except Exception:
 
 
 APP_TITLE = "Jarivs"
-APP_VERSION = "1.8.0"
-CACHE_VERSION = "jarvis-ai-1-8-0"
+APP_VERSION = "1.9.0"
+CACHE_VERSION = "jarvis-ai-1-9-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -173,7 +173,7 @@ async def add_web_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     elif request.url.path in {"/manifest.json", "/icon.svg", "/offline"}:
         response.headers["Cache-Control"] = "public, max-age=3600"
-    elif request.url.path.startswith(("/chat/", "/essay/", "/account", "/api/")) or request.url.path == "/":
+    elif request.url.path.startswith(("/chat/", "/essay/", "/study/", "/account", "/api/")) or request.url.path == "/":
         response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -209,6 +209,22 @@ class EssaySelfCheckRequest(BaseModel):
     draft: str = Field(min_length=1, max_length=MAX_ATTACHMENT_CHARS)
     rubric: AssignmentMemoryItem | None = None
     feedback: AssignmentMemoryItem | None = None
+
+
+StudyToolAction = Literal["plan", "flashcards", "quiz"]
+
+
+class StudyToolRequest(BaseModel):
+    action: StudyToolAction
+    subject: str = Field(min_length=1, max_length=120)
+    level: str = Field(default="", max_length=120)
+    curriculum: str = Field(default="", max_length=120)
+    goal: str = Field(default="", max_length=500)
+    topic: str = Field(min_length=1, max_length=500)
+    notes: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    target_date: str = Field(default="", max_length=32)
+    minutes_per_day: int = Field(default=30, ge=10, le=240)
+    count: int = Field(default=8, ge=3, le=20)
 
 
 class SlidingRateLimiter:
@@ -1090,6 +1106,146 @@ def combined_assignment_context(
         )
     combined.extend(attachments[:MAX_ATTACHMENTS])
     return combined[: MAX_ATTACHMENTS * 2]
+
+
+def parsed_json_object(text: str) -> dict[str, Any] | None:
+    cleaned = clean_text(text)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        value = json.loads(cleaned)
+        return value if isinstance(value, dict) else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    start = cleaned.find("{")
+    if start < 0:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _short_text(value: Any, limit: int) -> str:
+    return clean_text(str(value or ""))[:limit]
+
+
+def normalized_study_result(action: StudyToolAction, value: dict[str, Any]) -> dict[str, Any]:
+    if action == "plan":
+        sessions: list[dict[str, Any]] = []
+        for item in value.get("sessions", [])[:20] if isinstance(value.get("sessions"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            title = _short_text(item.get("title"), 120)
+            objective = _short_text(item.get("objective"), 500)
+            activities = [
+                _short_text(activity, 240)
+                for activity in item.get("activities", [])[:6]
+                if _short_text(activity, 240)
+            ] if isinstance(item.get("activities"), list) else []
+            if not title or not objective:
+                continue
+            try:
+                minutes = max(10, min(240, int(item.get("minutes", 30))))
+            except (TypeError, ValueError):
+                minutes = 30
+            sessions.append({"title": title, "objective": objective, "activities": activities, "minutes": minutes})
+        if not sessions:
+            raise ValueError("The study model did not return any usable study sessions.")
+        return {
+            "kind": "plan",
+            "title": _short_text(value.get("title"), 160) or "Study plan",
+            "summary": _short_text(value.get("summary"), 700),
+            "sessions": sessions,
+        }
+
+    if action == "flashcards":
+        cards: list[dict[str, str]] = []
+        for item in value.get("cards", [])[:20] if isinstance(value.get("cards"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            front = _short_text(item.get("front"), 500)
+            back = _short_text(item.get("back"), 1200)
+            hint = _short_text(item.get("hint"), 300)
+            if front and back:
+                cards.append({"front": front, "back": back, "hint": hint})
+        if not cards:
+            raise ValueError("The study model did not return any usable flashcards.")
+        return {"kind": "flashcards", "cards": cards}
+
+    questions: list[dict[str, Any]] = []
+    raw_questions = value.get("questions", []) if isinstance(value.get("questions"), list) else []
+    for item in raw_questions[:20]:
+        if not isinstance(item, dict):
+            continue
+        prompt = _short_text(item.get("prompt"), 700)
+        options = [
+            _short_text(option, 400)
+            for option in item.get("options", [])[:6]
+            if _short_text(option, 400)
+        ] if isinstance(item.get("options"), list) else []
+        try:
+            answer_index = int(item.get("answer_index", -1))
+        except (TypeError, ValueError):
+            answer_index = -1
+        explanation = _short_text(item.get("explanation"), 900)
+        if prompt and len(options) >= 2 and 0 <= answer_index < len(options) and explanation:
+            questions.append(
+                {
+                    "prompt": prompt,
+                    "options": options,
+                    "answer_index": answer_index,
+                    "explanation": explanation,
+                }
+            )
+    if not questions:
+        raise ValueError("The study model did not return any usable quiz questions.")
+    return {"kind": "quiz", "questions": questions}
+
+
+def study_tool_prompt(payload: StudyToolRequest) -> str:
+    context = {
+        "subject": clean_text(payload.subject),
+        "level": clean_text(payload.level),
+        "curriculum": clean_text(payload.curriculum),
+        "goal": clean_text(payload.goal),
+        "topic": clean_text(payload.topic),
+        "notes": clean_text(payload.notes),
+        "target_date": clean_text(payload.target_date),
+        "minutes_per_day": payload.minutes_per_day,
+        "requested_count": payload.count,
+    }
+    if payload.action == "plan":
+        schema = (
+            '{"title":"...","summary":"...","sessions":['
+            '{"title":"...","objective":"...","activities":["..."],"minutes":30}]}'
+        )
+        task = (
+            "Create a realistic study plan from today to the target date, or a sensible sequence if no date is "
+            "provided. Each session must teach or practise something specific, fit the daily time, and build on the "
+            "previous session. Include retrieval practice and at least one review session."
+        )
+    elif payload.action == "flashcards":
+        schema = '{"cards":[{"front":"...","back":"...","hint":"..."}]}'
+        task = (
+            "Create the requested number of high-quality retrieval flashcards. Test one idea per card, prefer why/how "
+            "questions over trivia, keep answers concise, and use the supplied notes as the authority when present."
+        )
+    else:
+        schema = (
+            '{"questions":[{"prompt":"...","options":["...","...","...","..."],'
+            '"answer_index":0,"explanation":"..."}]}'
+        )
+        task = (
+            "Create the requested number of multiple-choice questions only because the learner explicitly requested a "
+            "quiz. Use plausible distractors, exactly one correct option, and explanations that teach the reasoning."
+        )
+    return (
+        "You are Jarvis's structured study-tool generator. "
+        f"{task} Return only valid JSON matching this schema: {schema}\n\n"
+        f"Learner context:\n{json.dumps(context, ensure_ascii=False)}"
+    )
 
 
 def call_jarvis_reply(
@@ -2482,6 +2638,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 {auth_nav}
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
                 <a class="nav-item" href="/essay/{chat_id}"><span class="nav-icon">E</span><span>Essay workspace</span></a>
+                <a class="nav-item" href="/study/{chat_id}"><span class="nav-icon">S</span><span>Study workspace</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
             </nav>
             <label class="chat-search" id="chat-search-wrap" hidden>
@@ -2791,7 +2948,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 title: item.title || firstUserLine(getChatMemory(item.id)),
                 messages: getChatMemory(item.id),
                 assignment_memory: getAssignmentMemory(item.id),
-                essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{item.id}}_v1`, null)
+                essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{item.id}}_v1`, null),
+                study_workspace: readJsonStorage(`jarvis_study_workspace_${{item.id}}_v1`, null)
             }}));
             if (!index.some(item => item.id === chatId)) {{
                 chats.push({{
@@ -2799,10 +2957,16 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                     title: firstUserLine(getChatMemory()),
                     messages: getChatMemory(),
                     assignment_memory: getAssignmentMemory(),
-                    essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{chatId}}_v1`, null)
+                    essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{chatId}}_v1`, null),
+                    study_workspace: readJsonStorage(`jarvis_study_workspace_${{chatId}}_v1`, null)
                 }});
             }}
-            const blob = new Blob([JSON.stringify({{ exported_at: new Date().toISOString(), memory: "device", chats }}, null, 2)], {{ type: "application/json" }});
+            const blob = new Blob([JSON.stringify({{
+                exported_at: new Date().toISOString(),
+                memory: "device",
+                subject_profiles: readJsonStorage("jarvis_subject_profiles_v1", null),
+                chats
+            }}, null, 2)], {{ type: "application/json" }});
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");
             link.href = url;
@@ -3081,6 +3245,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                     localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
                     localStorage.removeItem(`jarvis_assignment_memory_${{targetId}}_v1`);
                     localStorage.removeItem(`jarvis_essay_workspace_${{targetId}}_v1`);
+                    localStorage.removeItem(`jarvis_study_workspace_${{targetId}}_v1`);
                     saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
                 }} catch (error) {{}}
             }}
@@ -3104,6 +3269,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_chat_memory_${{item.id}}_v1`));
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_assignment_memory_${{item.id}}_v1`));
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_essay_workspace_${{item.id}}_v1`));
+                    getChatIndex().forEach(item => localStorage.removeItem(`jarvis_study_workspace_${{item.id}}_v1`));
+                    localStorage.removeItem("jarvis_subject_profiles_v1");
                     localStorage.removeItem(chatMemoryKey);
                     localStorage.removeItem(assignmentMemoryKey);
                     localStorage.removeItem(chatIndexKey);
@@ -3438,6 +3605,96 @@ def essay_workspace_html(chat_id: str, profile: dict[str, Any] | None) -> str:
 </html>"""
 
 
+def study_workspace_html(chat_id: str, profile: dict[str, Any] | None) -> str:
+    owner_label = str((profile or {}).get("name") or "Anonymous learner")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b0f0f">
+    <title>Study workspace | {html.escape(APP_TITLE)}</title>
+    <link rel="stylesheet" href="/assets/study-workspace.css?v={APP_VERSION}">
+    <script src="/assets/study-workspace.js?v={APP_VERSION}" defer></script>
+</head>
+<body data-chat-id="{html.escape(chat_id, quote=True)}">
+    <header class="study-bar">
+        <a class="icon-link" href="/chat/{html.escape(chat_id, quote=True)}" aria-label="Back to Jarvis chat" title="Back to Jarvis chat">&larr;</a>
+        <div class="brand-block"><span>JARVIS / STUDY</span><strong>Study workspace</strong></div>
+        <label class="profile-picker"><span>Subject profile</span><select id="profile-select" aria-label="Subject profile"></select></label>
+        <button class="icon-button" id="new-profile" type="button" title="Create subject profile" aria-label="Create subject profile">+</button>
+        <span class="save-state" id="study-save-state" role="status" aria-live="polite">Saved on this device</span>
+        <span class="owner-label">{html.escape(owner_label)}</span>
+        <a class="button" href="/chat/{html.escape(chat_id, quote=True)}">Open chat</a>
+    </header>
+    <main class="study-layout">
+        <aside class="profile-pane" aria-label="Subject profile settings">
+            <div class="pane-heading"><span>Learning context</span><strong>Subject profile</strong></div>
+            <label>Profile name<input id="profile-name" maxlength="80" placeholder="e.g. Year 10 Science"></label>
+            <label>Subject<input id="profile-subject" maxlength="120" placeholder="Subject"></label>
+            <label>Year or level<input id="profile-level" maxlength="120" placeholder="Year 10, beginner, advanced"></label>
+            <label>Curriculum<input id="profile-curriculum" maxlength="120" placeholder="State, country, or exam board"></label>
+            <label>Learning goal<textarea id="profile-goal" rows="5" maxlength="500" placeholder="What are you working toward?"></textarea></label>
+            <button class="danger-link" id="delete-profile" type="button">Delete profile</button>
+        </aside>
+        <section class="tool-pane" aria-label="Study tools">
+            <header class="tool-header">
+                <div class="tool-tabs" role="tablist" aria-label="Study tool">
+                    <button class="tool-tab active" data-tool-tab="plan" role="tab" aria-selected="true" type="button">Plan</button>
+                    <button class="tool-tab" data-tool-tab="flashcards" role="tab" aria-selected="false" type="button">Flashcards</button>
+                    <button class="tool-tab" data-tool-tab="quiz" role="tab" aria-selected="false" type="button">Quiz</button>
+                </div>
+            </header>
+            <div class="tool-context">
+                <label>Topic<input id="study-topic" maxlength="500" placeholder="What are you studying?"></label>
+                <label>Notes or source material<textarea id="study-notes" rows="5" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Paste class notes, key facts, or a course outline"></textarea></label>
+            </div>
+            <section class="tool-view active" data-tool-view="plan" role="tabpanel">
+                <div class="generator-controls">
+                    <label>Target date<input id="plan-target-date" type="date"></label>
+                    <label>Minutes per day<input id="plan-minutes" type="number" min="10" max="240" step="5" value="30"></label>
+                    <button class="primary" id="generate-plan" type="button">Build study plan</button>
+                </div>
+                <div class="tool-status" id="plan-status" role="status" aria-live="polite"></div>
+                <div class="plan-output" id="plan-output"></div>
+            </section>
+            <section class="tool-view" data-tool-view="flashcards" role="tabpanel" hidden>
+                <div class="generator-controls compact">
+                    <label>Cards<select id="flashcard-count"><option>6</option><option selected>8</option><option>10</option><option>12</option><option>16</option><option>20</option></select></label>
+                    <button class="primary" id="generate-flashcards" type="button">Make flashcards</button>
+                </div>
+                <div class="tool-status" id="flashcard-status" role="status" aria-live="polite"></div>
+                <div class="flashcard-output" id="flashcard-output"></div>
+            </section>
+            <section class="tool-view" data-tool-view="quiz" role="tabpanel" hidden>
+                <div class="generator-controls compact">
+                    <label>Questions<select id="quiz-count"><option>5</option><option selected>8</option><option>10</option><option>12</option><option>15</option></select></label>
+                    <button class="primary" id="generate-quiz" type="button">Generate quiz</button>
+                </div>
+                <div class="tool-status" id="quiz-status" role="status" aria-live="polite"></div>
+                <form class="quiz-output" id="quiz-output"></form>
+            </section>
+        </section>
+        <aside class="progress-pane" aria-label="Study progress">
+            <div class="pane-heading"><span>Current profile</span><strong>Progress</strong></div>
+            <div class="progress-stats">
+                <div><span>Plan</span><strong id="plan-progress">0%</strong></div>
+                <div><span>Cards reviewed</span><strong id="cards-reviewed">0</strong></div>
+                <div><span>Cards known</span><strong id="cards-known">0</strong></div>
+                <div><span>Quiz average</span><strong id="quiz-average">--</strong></div>
+                <div><span>Study time</span><strong id="study-minutes">0m</strong></div>
+                <div><span>Sessions</span><strong id="study-sessions">0</strong></div>
+            </div>
+            <section class="activity-section">
+                <div class="section-heading"><strong>Recent activity</strong><button class="text-button" id="reset-progress" type="button">Reset</button></div>
+                <div class="activity-list" id="activity-list"></div>
+            </section>
+        </aside>
+    </main>
+</body>
+</html>"""
+
+
 def account_page_html(request: Request, csp_nonce: str) -> str:
     profile = current_user(request)
     device_id = device_id_from_request(request)
@@ -3533,7 +3790,7 @@ def account_page_html(request: Request, csp_nonce: str) -> str:
         const ids = new Set(Array.isArray(index) ? index.map(item => String(item?.id || "")).filter(Boolean) : []);
         for (let position = 0; position < localStorage.length; position += 1) {{
             const key = localStorage.key(position) || "";
-            const match = key.match(/^jarvis_(?:(?:chat|assignment)_memory|essay_workspace)_([0-9a-f-]{{36}})_v1$/i);
+            const match = key.match(/^jarvis_(?:(?:chat|assignment)_memory|essay_workspace|study_workspace)_([0-9a-f-]{{36}})_v1$/i);
             if (match) ids.add(match[1]);
         }}
         return {{
@@ -3543,9 +3800,13 @@ def account_page_html(request: Request, csp_nonce: str) -> str:
                 messages: readStoredJson(`jarvis_chat_memory_${{id}}_v1`, []),
                 assignment_memory: readStoredJson(`jarvis_assignment_memory_${{id}}_v1`, []),
                 essay_workspace: readStoredJson(`jarvis_essay_workspace_${{id}}_v1`, null),
+                study_workspace: readStoredJson(`jarvis_study_workspace_${{id}}_v1`, null),
                 mode: localStorage.getItem(`jarvis_mode_${{id}}`) || "chat"
             }})),
-            preferences: {{ activity: readStoredJson("jarvis_web_activity_v1", {{}}) }}
+            preferences: {{
+                activity: readStoredJson("jarvis_web_activity_v1", {{}}),
+                subject_profiles: readStoredJson("jarvis_subject_profiles_v1", null)
+            }}
         }};
     }}
     function clearBrowserData() {{
@@ -3616,9 +3877,9 @@ def privacy() -> HTMLResponse:
     <h1>Privacy</h1>
     <p>Jarvis can be used anonymously, and Google sign-in can be enabled by the site owner. Anonymous chats belong to this browser. Signed-in chats belong to the Google account identifier returned by Google, so the same account can reopen its Jarvis conversations on another device.</p>
     <h2>What is stored</h2>
-    <p>Main chat text, chat titles, essay drafts, uploaded rubric text, teacher feedback, and saved draft versions are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
+    <p>Main chat text, chat titles, essay drafts, uploaded rubric text, teacher feedback, saved draft versions, subject profiles, study materials, and progress are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
     <h2>AI requests</h2>
-    <p>When you send a message or run an essay rubric check, the recent conversation or assignment material needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
+    <p>When you send a message, run an essay rubric check, or explicitly generate a study plan, flashcard deck, or quiz, the material needed for that result is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
     <h2>AI providers</h2>
     <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
     <h2>Ads</h2>
@@ -3821,6 +4082,19 @@ def open_essay_workspace(chat_id: str, request: Request) -> HTMLResponse:
         return HTMLResponse("This essay workspace is unavailable.", status_code=404)
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(essay_workspace_html(chat_id, current_user(request)))
+    response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
+    set_device_cookie(response, request, device_id)
+    return response
+
+
+@app.get("/study/{chat_id}", response_class=HTMLResponse)
+def open_study_workspace(chat_id: str, request: Request) -> HTMLResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return HTMLResponse("This study workspace is unavailable.", status_code=404)
+    nonce = secrets.token_urlsafe(18)
+    response = HTMLResponse(study_workspace_html(chat_id, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
     set_device_cookie(response, request, device_id)
     return response
@@ -4108,6 +4382,52 @@ def api_essay_self_check(chat_id: str, payload: EssaySelfCheckRequest, request: 
         {
             "answer": answer,
             "checked_at": now_stamp(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        }
+    )
+
+
+@app.post("/api/chats/{chat_id}/study-tools")
+def api_study_tools(chat_id: str, payload: StudyToolRequest, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+
+    prompt = study_tool_prompt(payload)
+    started = time.perf_counter()
+    answer = cloud_generate(
+        prompt,
+        history=[],
+        mode="study",
+        system_prompt=(
+            "Generate accurate, age-appropriate study material from the learner context. Follow the requested JSON "
+            "schema exactly, do not wrap it in Markdown, and never claim facts not supported by the supplied notes "
+            "when notes are provided."
+        ),
+    )
+    if not clean_text(answer):
+        return JSONResponse(
+            {"detail": "The study generator is unavailable right now. Check the configured AI provider."},
+            status_code=503,
+        )
+    parsed = parsed_json_object(answer)
+    if parsed is None:
+        return JSONResponse(
+            {"detail": "Jarvis could not format that study material. Please try generating it again."},
+            status_code=502,
+        )
+    try:
+        result = normalized_study_result(payload.action, parsed)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=502)
+    return JSONResponse(
+        {
+            "result": result,
+            "generated_at": now_stamp(),
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
         }
     )
