@@ -43,8 +43,8 @@ except Exception:
 
 
 APP_TITLE = "Jarivs"
-APP_VERSION = "1.7.2"
-CACHE_VERSION = "jarvis-ai-1-7-2"
+APP_VERSION = "1.7.3"
+CACHE_VERSION = "jarvis-ai-1-7-3"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -482,10 +482,16 @@ def auth_status_html(profile: dict[str, Any] | None) -> str:
 
 def auth_nav_html(profile: dict[str, Any] | None) -> str:
     if profile:
-        return '<a class="nav-item" href="/logout"><span class="nav-icon">&#8634;</span><span>Sign out</span></a>'
+        return (
+            '<a class="nav-item" href="/account"><span class="nav-icon">&#9679;</span><span>Account</span></a>'
+            '<a class="nav-item" href="/logout"><span class="nav-icon">&#8634;</span><span>Sign out</span></a>'
+        )
     if google_login_configured():
-        return '<a class="nav-item" href="/login/google"><span class="nav-icon">G</span><span>Sign in with Google</span></a>'
-    return ""
+        return (
+            '<a class="nav-item" href="/account"><span class="nav-icon">&#9679;</span><span>Account</span></a>'
+            '<a class="nav-item" href="/login/google"><span class="nav-icon">G</span><span>Sign in with Google</span></a>'
+        )
+    return '<a class="nav-item" href="/account"><span class="nav-icon">&#9679;</span><span>Account</span></a>'
 
 
 def client_rate_key(request: Request, device_id: str) -> str:
@@ -2467,9 +2473,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
                 {auth_nav}
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
-                <a class="nav-item" href="/api/device/export" id="export-device-data"><span class="nav-icon">&#8681;</span><span>Export my data</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
-                <button class="nav-item danger" id="delete-device-data" type="button"><span class="nav-icon">&#215;</span><span>Delete my data</span></button>
             </nav>
             <label class="chat-search" id="chat-search-wrap" hidden>
                 <span class="sr-only">Search recent chats</span>
@@ -3345,6 +3349,159 @@ def robots_txt() -> Response:
     return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
+def account_page_html(request: Request, csp_nonce: str) -> str:
+    profile = current_user(request)
+    device_id = device_id_from_request(request)
+    chat_count = len(get_device_chats(device_id))
+    signed_in = bool(profile)
+    display_name = str((profile or {}).get("name") or "Anonymous user")
+    email = str((profile or {}).get("email") or "Not signed in")
+    initial = (display_name[:1] or "J").upper()
+    login_action = (
+        '<a class="button primary" href="/login/google">Sign in with Google</a>'
+        if not signed_in and google_login_configured()
+        else ""
+    )
+    sign_out_action = '<a class="button" href="/logout">Sign out</a>' if signed_in else ""
+    account_label = "Google account" if signed_in else "Anonymous browser session"
+    sync_label = "Available across devices when you use this Google account." if signed_in else "Stored for this browser only."
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Account | {html.escape(APP_TITLE)}</title>
+    <style nonce="{html.escape(csp_nonce)}">
+        :root {{ color-scheme: dark; --bg:#061019; --panel:#0b1824; --line:#244052; --text:#eef8ff; --muted:#9bb0bd; --accent:#45f0ff; --danger:#ff7b84; }}
+        * {{ box-sizing:border-box; }}
+        body {{ margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,sans-serif; }}
+        main {{ width:min(760px,calc(100% - 32px)); margin:0 auto; padding:32px 0 56px; }}
+        .back {{ color:#9bdde5; text-decoration:none; }}
+        h1 {{ margin:28px 0 6px; font-size:32px; letter-spacing:0; }}
+        .lead {{ margin:0 0 24px; color:var(--muted); }}
+        .profile {{ display:flex; align-items:center; gap:16px; padding:20px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }}
+        .avatar {{ display:grid; place-items:center; width:54px; height:54px; flex:0 0 54px; border:1px solid #2c718b; border-radius:8px; background:#10283a; color:var(--accent); font-size:22px; font-weight:700; }}
+        .identity {{ min-width:0; }}
+        .identity strong,.identity span {{ display:block; overflow-wrap:anywhere; }}
+        .identity span {{ color:var(--muted); }}
+        .tag {{ margin-left:auto; color:#98ffae; font:12px/1.2 ui-monospace,monospace; text-transform:uppercase; }}
+        .stats {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:16px 0 28px; }}
+        .stat {{ padding:16px; border-top:1px solid var(--line); }}
+        .stat span {{ display:block; color:var(--muted); font-size:13px; }}
+        .stat strong {{ display:block; margin-top:4px; font-size:18px; }}
+        section {{ padding:22px 0; border-top:1px solid var(--line); }}
+        h2 {{ margin:0 0 6px; font-size:19px; }}
+        section p {{ margin:0 0 16px; color:var(--muted); }}
+        .actions {{ display:flex; flex-wrap:wrap; gap:10px; }}
+        .button {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:0 15px; border:1px solid #315267; border-radius:6px; background:#0c1b28; color:var(--text); font:inherit; text-decoration:none; cursor:pointer; }}
+        .button:hover {{ border-color:var(--accent); }}
+        .button.primary {{ background:#b7f8ff; border-color:#b7f8ff; color:#061019; font-weight:700; }}
+        .button.danger {{ border-color:#733641; color:#ffd9dc; }}
+        .button:disabled {{ opacity:.55; cursor:wait; }}
+        #account-message {{ min-height:24px; margin-top:12px; color:#aeeeba; }}
+        @media(max-width:560px) {{ main {{ width:min(100% - 24px,760px); padding-top:20px; }} .profile {{ align-items:flex-start; }} .tag {{ display:none; }} .stats {{ grid-template-columns:1fr; }} .button {{ width:100%; }} }}
+    </style>
+</head>
+<body><main>
+    <a class="back" href="/">&larr; Back to Jarvis</a>
+    <h1>Your account</h1>
+    <p class="lead">Manage your identity, conversations, and locally stored assignment memory.</p>
+    <div class="profile">
+        <div class="avatar" aria-hidden="true">{html.escape(initial)}</div>
+        <div class="identity"><strong>{html.escape(display_name)}</strong><span>{html.escape(email)}</span></div>
+        <span class="tag">{html.escape(account_label)}</span>
+    </div>
+    <div class="stats">
+        <div class="stat"><span>Conversations</span><strong>{chat_count}</strong></div>
+        <div class="stat"><span>Memory</span><strong>{'This device + account routing' if signed_in else 'This device'}</strong></div>
+    </div>
+    <section>
+        <h2>Sign-in</h2>
+        <p>{html.escape(sync_label)}</p>
+        <div class="actions">{login_action}{sign_out_action}</div>
+    </section>
+    <section>
+        <h2>Export your data</h2>
+        <p>Downloads server-owned conversation records together with chats, assignment files, and preferences stored in this browser.</p>
+        <div class="actions"><button class="button" id="export-account" type="button">Download data</button></div>
+    </section>
+    <section>
+        <h2>{'Delete account data' if signed_in else 'Delete browser data'}</h2>
+        <p>This permanently removes conversation records owned by this {'account' if signed_in else 'browser'}, clears Jarvis data from this browser, and signs you out.</p>
+        <div class="actions"><button class="button danger" id="delete-account" type="button">Delete my data</button></div>
+        <div id="account-message" role="status" aria-live="polite"></div>
+    </section>
+</main>
+<script nonce="{html.escape(csp_nonce)}">
+    const exportButton = document.getElementById("export-account");
+    const deleteButton = document.getElementById("delete-account");
+    const accountMessage = document.getElementById("account-message");
+    function readStoredJson(key, fallback) {{
+        try {{ return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; }} catch (error) {{ return fallback; }}
+    }}
+    function browserData() {{
+        const index = readStoredJson("jarvis_chat_index_v1", []);
+        const ids = new Set(Array.isArray(index) ? index.map(item => String(item?.id || "")).filter(Boolean) : []);
+        for (let position = 0; position < localStorage.length; position += 1) {{
+            const key = localStorage.key(position) || "";
+            const match = key.match(/^jarvis_(?:chat|assignment)_memory_([0-9a-f-]{{36}})_v1$/i);
+            if (match) ids.add(match[1]);
+        }}
+        return {{
+            chat_index: index,
+            chats: Array.from(ids).map(id => ({{
+                id,
+                messages: readStoredJson(`jarvis_chat_memory_${{id}}_v1`, []),
+                assignment_memory: readStoredJson(`jarvis_assignment_memory_${{id}}_v1`, []),
+                mode: localStorage.getItem(`jarvis_mode_${{id}}`) || "chat"
+            }})),
+            preferences: {{ activity: readStoredJson("jarvis_web_activity_v1", {{}}) }}
+        }};
+    }}
+    function clearBrowserData() {{
+        const keys = [];
+        for (let position = 0; position < localStorage.length; position += 1) {{
+            const key = localStorage.key(position) || "";
+            if (key.startsWith("jarvis_")) keys.push(key);
+        }}
+        keys.forEach(key => localStorage.removeItem(key));
+    }}
+    exportButton.addEventListener("click", async () => {{
+        exportButton.disabled = true;
+        accountMessage.textContent = "Preparing your download...";
+        try {{
+            const response = await fetch("/api/device/export");
+            if (!response.ok) throw new Error("Export failed");
+            const payload = await response.json();
+            payload.browser_data = browserData();
+            const blob = new Blob([JSON.stringify(payload, null, 2)], {{ type:"application/json" }});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "jarvis-account-data.json";
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            accountMessage.textContent = "Your data download is ready.";
+        }} catch (error) {{ accountMessage.textContent = "Jarvis could not prepare the download. Try again."; }}
+        finally {{ exportButton.disabled = false; }}
+    }});
+    deleteButton.addEventListener("click", async () => {{
+        if (!window.confirm("Permanently delete all Jarvis data owned by this account or browser? This cannot be undone.")) return;
+        deleteButton.disabled = true;
+        accountMessage.textContent = "Deleting your Jarvis data...";
+        try {{
+            const response = await fetch("/api/device", {{ method:"DELETE" }});
+            if (!response.ok) throw new Error("Delete failed");
+            clearBrowserData();
+            window.location.assign("/");
+        }} catch (error) {{
+            deleteButton.disabled = false;
+            accountMessage.textContent = "Jarvis could not delete your data. Nothing else was changed.";
+        }}
+    }});
+</script></body></html>"""
+
+
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy() -> HTMLResponse:
     return HTMLResponse(
@@ -3423,6 +3580,15 @@ def ready() -> JSONResponse:
 @app.get("/status")
 def status() -> JSONResponse:
     return JSONResponse(status_payload())
+
+
+@app.get("/account", response_class=HTMLResponse)
+def account(request: Request) -> HTMLResponse:
+    nonce = secrets.token_urlsafe(18)
+    response = HTMLResponse(account_page_html(request, nonce))
+    response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
+    set_device_cookie(response, request, device_id_from_request(request))
+    return response
 
 
 @app.get("/login/google")
@@ -3513,6 +3679,11 @@ def logout() -> RedirectResponse:
     response.delete_cookie(OAUTH_STATE_COOKIE)
     response.delete_cookie(DEVICE_COOKIE)
     return response
+
+
+@app.post("/logout")
+def logout_post() -> RedirectResponse:
+    return logout()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3749,6 +3920,7 @@ def api_delete_chat(chat_id: str, request: Request) -> JSONResponse:
 @app.get("/api/device/export")
 def api_export_device(request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
+    profile = current_user(request)
     chats = [
         {
             "id": chat_id,
@@ -3759,16 +3931,33 @@ def api_export_device(request: Request) -> JSONResponse:
         for chat_id in get_device_chats(device_id)
         if STORE.owns_chat(device_id, chat_id)
     ]
-    response = JSONResponse({"exported_at": now_stamp(), "chats": chats})
-    response.headers["Content-Disposition"] = 'attachment; filename="jarvis-data-export.json"'
+    response = JSONResponse(
+        {
+            "exported_at": now_stamp(),
+            "app": APP_TITLE,
+            "version": APP_VERSION,
+            "ownership": "account" if profile else "browser",
+            "account": (
+                {"name": str(profile.get("name", "")), "email": str(profile.get("email", ""))}
+                if profile
+                else None
+            ),
+            "memory_location": "device" if DEVICE_MEMORY_ENABLED else "server",
+            "chats": chats,
+        }
+    )
+    response.headers["Content-Disposition"] = 'attachment; filename="jarvis-account-data.json"'
     return response
 
 
 @app.delete("/api/device")
 def api_delete_device(request: Request) -> JSONResponse:
     device_id = device_id_from_request(request)
+    account_deleted = current_user(request) is not None
     deleted = STORE.delete_device(device_id)
-    response = JSONResponse({"deleted": True, "chats_deleted": deleted})
+    response = JSONResponse({"deleted": True, "account_deleted": account_deleted, "chats_deleted": deleted})
+    response.delete_cookie(AUTH_COOKIE)
+    response.delete_cookie(OAUTH_STATE_COOKIE)
     response.delete_cookie(DEVICE_COOKIE)
     return response
 

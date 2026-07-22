@@ -58,6 +58,19 @@ The `JARVIS_GOOGLE_*` settings are optional. Google sign-in stays hidden unless
 both the client id and client secret are configured. The OAuth redirect URI in
 Google Cloud must exactly match `/auth/google/callback` on the public Render URL.
 
+To finish Google sign-in setup:
+
+1. Create a Web application OAuth client in Google Cloud Console.
+2. Add `https://jarvis-web-cloud.onrender.com` as an authorized JavaScript origin.
+3. Add `https://jarvis-web-cloud.onrender.com/auth/google/callback` as an authorized redirect URI.
+4. Copy the client id and client secret into Render's environment variables.
+5. Redeploy, open `/status`, and confirm `google_login_configured` is `true`.
+
+Signed-in users can open `/account` to view their profile, download a combined
+export of server-owned records and browser-held chat memory, delete their data,
+or sign out. Anonymous users have the same export and deletion controls for the
+current browser without being required to create an account.
+
 ## Render URL note
 
 The current Render subdomain is:
@@ -97,7 +110,7 @@ version is not the expected deployed build.
 ## Public capabilities
 
 - Anonymous, device-owned chat history stored in the user's browser
-- Optional Google sign-in for account-owned chat routing across devices
+- Optional Google sign-in, account profile, cross-device chat routing, data export, and account deletion
 - Nine chat modes backed by NVIDIA, with optional OpenRouter fallback
 - In-memory document extraction for PDF, DOCX, PPTX, text, code, CSV, JSON, and Markdown files
 - Streaming response endpoint for chat clients that want incremental output

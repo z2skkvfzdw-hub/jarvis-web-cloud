@@ -9,7 +9,7 @@ import urllib.request
 
 DEFAULT_URL = "https://jarvis-web-cloud.onrender.com/status"
 DEFAULT_APP = "Jarivs"
-DEFAULT_VERSION = "1.7.2"
+DEFAULT_VERSION = "1.7.3"
 
 
 def fetch_json(url: str, timeout: int) -> dict[str, object]:
