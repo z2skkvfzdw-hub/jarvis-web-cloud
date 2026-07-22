@@ -1,9 +1,16 @@
-# Jarvis.AI Cloud App
+# Jarivs Cloud App
 
-This folder contains the canonical public Jarvis web app. The live address is:
+This folder contains the canonical public Jarivs web app. The live address is:
 
 ```text
 https://jarvis-web-cloud.onrender.com
+```
+
+The live app currently reports its name and version through `/status`. Check it
+after every deploy:
+
+```text
+py -3.11 scripts/check_deploy.py
 ```
 
 From the repository root, start it with:
@@ -41,8 +48,8 @@ JARVIS_GOOGLE_REDIRECT_URI=https://jarvis-web-cloud.onrender.com/auth/google/cal
 
 `OPENROUTER_API_KEY` and `JARVIS_OPENROUTER_MODEL=openrouter/free`
 are optional fallback settings. Groq is ignored unless `JARVIS_ENABLE_GROQ=true`;
-if you re-enable it, add `GROQ_API_KEY` and optionally
-`JARVIS_GROQ_MODEL=llama-3.3-70b-versatile`. Never commit secret values. With `JARVIS_DEVICE_MEMORY=true`,
+if you re-enable it, add `groq` to `JARVIS_PROVIDER_CHAIN`, add `GROQ_API_KEY`,
+and optionally set `JARVIS_GROQ_MODEL=llama-3.3-70b-versatile`. Never commit secret values. With `JARVIS_DEVICE_MEMORY=true`,
 main chat memory is stored in the user's browser, so Render does not need PostgreSQL for
 public chat history. `DATABASE_URL` is still useful for server-owned features later.
 The `JARVIS_ADSENSE_*` settings are optional. Ads stay disabled unless a valid
@@ -50,6 +57,42 @@ AdSense client id and at least one numeric slot id are configured.
 The `JARVIS_GOOGLE_*` settings are optional. Google sign-in stays hidden unless
 both the client id and client secret are configured. The OAuth redirect URI in
 Google Cloud must exactly match `/auth/google/callback` on the public Render URL.
+
+## Render URL note
+
+The current Render subdomain is:
+
+```text
+https://jarvis-web-cloud.onrender.com
+```
+
+The user wants:
+
+```text
+https://jarvis.onrender.com
+```
+
+Render does not expose a normal setting to rename an existing `onrender.com`
+subdomain after the service has been created. To get that exact address, create
+a new Render web service named `jarvis` if the subdomain is available, or attach
+a custom domain that the user owns.
+
+## Deploy check
+
+After pushing and deploying, run:
+
+```text
+py -3.11 scripts/check_deploy.py
+```
+
+From the repository root, use:
+
+```text
+py -3.11 cloud_deploy\scripts\check_deploy.py
+```
+
+The script checks the live `/status` endpoint and fails if the app name or
+version is not the expected deployed build.
 
 ## Public capabilities
 

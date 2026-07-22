@@ -10,18 +10,16 @@ services:
       - key: JARVIS_CLOUD_PROVIDER
         value: nvidia
       - key: JARVIS_PROVIDER_CHAIN
-        value: nvidia,groq,openrouter
+        value: nvidia,openrouter
       - key: JARVIS_DEVICE_MEMORY
         value: "true"
+      - key: JARVIS_ENABLE_GROQ
+        value: "false"
       - key: NVIDIA_MODEL
         value: openai/gpt-oss-120b
       - key: NVIDIA_BASE_URL
         value: https://integrate.api.nvidia.com/v1
       - key: NVIDIA_API_KEY
-        sync: false
-      - key: JARVIS_GROQ_MODEL
-        value: llama-3.3-70b-versatile
-      - key: GROQ_API_KEY
         sync: false
       - key: JARVIS_OPENROUTER_MODEL
         value: openrouter/free
