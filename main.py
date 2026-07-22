@@ -43,8 +43,8 @@ except Exception:
 
 
 APP_TITLE = "Jarivs"
-APP_VERSION = "1.7.3"
-CACHE_VERSION = "jarvis-ai-1-7-3"
+APP_VERSION = "1.8.0"
+CACHE_VERSION = "jarvis-ai-1-8-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -173,7 +173,7 @@ async def add_web_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     elif request.url.path in {"/manifest.json", "/icon.svg", "/offline"}:
         response.headers["Cache-Control"] = "public, max-age=3600"
-    elif request.url.path.startswith(("/chat/", "/api/")) or request.url.path == "/":
+    elif request.url.path.startswith(("/chat/", "/essay/", "/account", "/api/")) or request.url.path == "/":
         response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -201,6 +201,14 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES)
     attachments: list[AttachmentContext] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
     assignment_memory: list[AssignmentMemoryItem] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+
+
+class EssaySelfCheckRequest(BaseModel):
+    title: str = Field(default="", max_length=160)
+    assignment: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    draft: str = Field(min_length=1, max_length=MAX_ATTACHMENT_CHARS)
+    rubric: AssignmentMemoryItem | None = None
+    feedback: AssignmentMemoryItem | None = None
 
 
 class SlidingRateLimiter:
@@ -2473,6 +2481,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
                 {auth_nav}
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
+                <a class="nav-item" href="/essay/{chat_id}"><span class="nav-icon">E</span><span>Essay workspace</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
             </nav>
             <label class="chat-search" id="chat-search-wrap" hidden>
@@ -2781,10 +2790,17 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 id: item.id,
                 title: item.title || firstUserLine(getChatMemory(item.id)),
                 messages: getChatMemory(item.id),
-                assignment_memory: getAssignmentMemory(item.id)
+                assignment_memory: getAssignmentMemory(item.id),
+                essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{item.id}}_v1`, null)
             }}));
             if (!index.some(item => item.id === chatId)) {{
-                chats.push({{ id: chatId, title: firstUserLine(getChatMemory()), messages: getChatMemory(), assignment_memory: getAssignmentMemory() }});
+                chats.push({{
+                    id: chatId,
+                    title: firstUserLine(getChatMemory()),
+                    messages: getChatMemory(),
+                    assignment_memory: getAssignmentMemory(),
+                    essay_workspace: readJsonStorage(`jarvis_essay_workspace_${{chatId}}_v1`, null)
+                }});
             }}
             const blob = new Blob([JSON.stringify({{ exported_at: new Date().toISOString(), memory: "device", chats }}, null, 2)], {{ type: "application/json" }});
             const url = URL.createObjectURL(blob);
@@ -3064,6 +3080,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 try {{
                     localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
                     localStorage.removeItem(`jarvis_assignment_memory_${{targetId}}_v1`);
+                    localStorage.removeItem(`jarvis_essay_workspace_${{targetId}}_v1`);
                     saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
                 }} catch (error) {{}}
             }}
@@ -3086,6 +3103,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 try {{
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_chat_memory_${{item.id}}_v1`));
                     getChatIndex().forEach(item => localStorage.removeItem(`jarvis_assignment_memory_${{item.id}}_v1`));
+                    getChatIndex().forEach(item => localStorage.removeItem(`jarvis_essay_workspace_${{item.id}}_v1`));
                     localStorage.removeItem(chatMemoryKey);
                     localStorage.removeItem(assignmentMemoryKey);
                     localStorage.removeItem(chatIndexKey);
@@ -3349,6 +3367,77 @@ def robots_txt() -> Response:
     return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
+def essay_workspace_html(chat_id: str, profile: dict[str, Any] | None) -> str:
+    owner_label = str((profile or {}).get("name") or "Anonymous learner")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071018">
+    <title>Essay workspace | {html.escape(APP_TITLE)}</title>
+    <link rel="stylesheet" href="/assets/essay-workspace.css?v={APP_VERSION}">
+    <script src="/assets/essay-workspace.js?v={APP_VERSION}" defer></script>
+</head>
+<body data-chat-id="{html.escape(chat_id, quote=True)}">
+    <header class="workspace-bar">
+        <a class="icon-link" href="/chat/{html.escape(chat_id, quote=True)}" aria-label="Back to Jarvis chat" title="Back to Jarvis chat">&larr;</a>
+        <div class="workspace-title">
+            <span>JARVIS / ESSAY</span>
+            <input id="essay-title" maxlength="160" placeholder="Untitled assignment" aria-label="Assignment title">
+        </div>
+        <span class="save-state" id="save-state" role="status" aria-live="polite">Saved on this device</span>
+        <div class="bar-actions">
+            <span class="owner-label">{html.escape(owner_label)}</span>
+            <button class="secondary" id="save-version" type="button">Save version</button>
+            <a class="button" href="/chat/{html.escape(chat_id, quote=True)}">Open chat</a>
+        </div>
+    </header>
+    <main class="essay-layout">
+        <aside class="source-pane" aria-label="Assignment sources">
+            <div class="pane-heading"><span>Assignment</span><strong>Sources</strong></div>
+            <label class="field-label" for="assignment-brief">Task or question</label>
+            <textarea id="assignment-brief" rows="7" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Paste the assignment question or task"></textarea>
+            <section class="source-section" data-source="rubric">
+                <div class="section-title"><strong>Rubric</strong><button class="text-button" data-remove-source="rubric" type="button" hidden>Remove</button></div>
+                <button class="upload-zone" data-upload="rubric" type="button">
+                    <span class="upload-icon">+</span><span><strong>Add rubric</strong><small>PDF, DOCX, or notes</small></span>
+                </button>
+                <input id="rubric-file" type="file" accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
+                <div class="source-file" id="rubric-summary" hidden></div>
+            </section>
+            <section class="source-section" data-source="feedback">
+                <div class="section-title"><strong>Teacher feedback</strong><button class="text-button" data-remove-source="feedback" type="button" hidden>Remove</button></div>
+                <button class="upload-zone" data-upload="feedback" type="button">
+                    <span class="upload-icon">+</span><span><strong>Add feedback</strong><small>Previous comments or marked work</small></span>
+                </button>
+                <input id="feedback-file" type="file" accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
+                <div class="source-file" id="feedback-summary" hidden></div>
+            </section>
+            <div class="source-status" id="source-status" role="status" aria-live="polite"></div>
+        </aside>
+        <section class="draft-pane" aria-label="Essay draft">
+            <header class="pane-heading draft-heading"><div><span>Current version</span><strong>Draft</strong></div><span id="word-count">0 words</span></header>
+            <textarea id="draft-editor" maxlength="{MAX_ATTACHMENT_CHARS}" spellcheck="true" placeholder="Start writing your draft"></textarea>
+            <footer class="draft-footer"><span id="character-count">0 / {MAX_ATTACHMENT_CHARS}</span><button class="secondary" id="snapshot-draft" type="button">Save version</button></footer>
+        </section>
+        <aside class="review-pane" aria-label="Rubric review and versions">
+            <section class="review-section">
+                <div class="pane-heading"><span>Jarvis review</span><strong>Rubric check</strong></div>
+                <button class="primary full" id="run-self-check" type="button">Check current draft</button>
+                <div class="review-status" id="review-status" role="status" aria-live="polite"></div>
+                <div class="review-result" id="review-result" hidden></div>
+            </section>
+            <section class="versions-section">
+                <div class="pane-heading"><span>Saved snapshots</span><strong>Versions</strong></div>
+                <div class="version-list" id="version-list"></div>
+            </section>
+        </aside>
+    </main>
+</body>
+</html>"""
+
+
 def account_page_html(request: Request, csp_nonce: str) -> str:
     profile = current_user(request)
     device_id = device_id_from_request(request)
@@ -3444,7 +3533,7 @@ def account_page_html(request: Request, csp_nonce: str) -> str:
         const ids = new Set(Array.isArray(index) ? index.map(item => String(item?.id || "")).filter(Boolean) : []);
         for (let position = 0; position < localStorage.length; position += 1) {{
             const key = localStorage.key(position) || "";
-            const match = key.match(/^jarvis_(?:chat|assignment)_memory_([0-9a-f-]{{36}})_v1$/i);
+            const match = key.match(/^jarvis_(?:(?:chat|assignment)_memory|essay_workspace)_([0-9a-f-]{{36}})_v1$/i);
             if (match) ids.add(match[1]);
         }}
         return {{
@@ -3453,6 +3542,7 @@ def account_page_html(request: Request, csp_nonce: str) -> str:
                 id,
                 messages: readStoredJson(`jarvis_chat_memory_${{id}}_v1`, []),
                 assignment_memory: readStoredJson(`jarvis_assignment_memory_${{id}}_v1`, []),
+                essay_workspace: readStoredJson(`jarvis_essay_workspace_${{id}}_v1`, null),
                 mode: localStorage.getItem(`jarvis_mode_${{id}}`) || "chat"
             }})),
             preferences: {{ activity: readStoredJson("jarvis_web_activity_v1", {{}}) }}
@@ -3526,9 +3616,9 @@ def privacy() -> HTMLResponse:
     <h1>Privacy</h1>
     <p>Jarvis can be used anonymously, and Google sign-in can be enabled by the site owner. Anonymous chats belong to this browser. Signed-in chats belong to the Google account identifier returned by Google, so the same account can reopen its Jarvis conversations on another device.</p>
     <h2>What is stored</h2>
-    <p>Main chat text and chat titles are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
+    <p>Main chat text, chat titles, essay drafts, uploaded rubric text, teacher feedback, and saved draft versions are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
     <h2>AI requests</h2>
-    <p>When you send a message, the recent browser-stored conversation context needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
+    <p>When you send a message or run an essay rubric check, the recent conversation or assignment material needed for the answer is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
     <h2>AI providers</h2>
     <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
     <h2>Ads</h2>
@@ -3718,6 +3808,19 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
         return HTMLResponse("This conversation is unavailable.", status_code=404)
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(page_html(chat_id, device_id, nonce, current_user(request)))
+    response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
+    set_device_cookie(response, request, device_id)
+    return response
+
+
+@app.get("/essay/{chat_id}", response_class=HTMLResponse)
+def open_essay_workspace(chat_id: str, request: Request) -> HTMLResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return HTMLResponse("This essay workspace is unavailable.", status_code=404)
+    nonce = secrets.token_urlsafe(18)
+    response = HTMLResponse(essay_workspace_html(chat_id, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
     set_device_cookie(response, request, device_id)
     return response
@@ -3948,6 +4051,66 @@ def api_export_device(request: Request) -> JSONResponse:
     )
     response.headers["Content-Disposition"] = 'attachment; filename="jarvis-account-data.json"'
     return response
+
+
+@app.post("/api/chats/{chat_id}/essay-check")
+def api_essay_self_check(chat_id: str, payload: EssaySelfCheckRequest, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+
+    draft = clean_text(payload.draft)
+    if not draft:
+        return JSONResponse({"detail": "Add a draft before running the rubric check."}, status_code=400)
+    if payload.rubric is None or not clean_text(payload.rubric.text):
+        return JSONResponse({"detail": "Add the rubric before running the rubric check."}, status_code=400)
+
+    attachments: list[AttachmentContext] = []
+    assignment = clean_text(payload.assignment)
+    if assignment:
+        attachments.append(AttachmentContext(name="Assignment brief.txt", text=assignment))
+    attachments.append(
+        AttachmentContext(
+            name=f"Rubric - {safe_upload_name(payload.rubric.name)}",
+            media_type=payload.rubric.media_type,
+            text=payload.rubric.text,
+        )
+    )
+    if payload.feedback is not None and clean_text(payload.feedback.text):
+        attachments.append(
+            AttachmentContext(
+                name=f"Teacher feedback - {safe_upload_name(payload.feedback.name)}",
+                media_type=payload.feedback.media_type,
+                text=payload.feedback.text,
+            )
+        )
+    attachments.append(AttachmentContext(name="Current essay draft.txt", text=draft))
+    prompt = (
+        "Self-check the attached essay draft against the attached rubric. Work criterion by criterion. For each "
+        "criterion, label it Met, Partly met, or Not yet met; point to specific evidence from the draft; explain the "
+        "judgment in student-friendly language; and give one concrete revision action. Apply any attached teacher "
+        "feedback. Finish with the three highest-priority revisions. Do not rewrite the essay or invent a score that "
+        "the rubric does not define."
+    )
+    if clean_text(payload.title):
+        prompt += f" The assignment title is: {clean_text(payload.title)}."
+    try:
+        attachment_prompt(prompt, attachments)
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=413)
+    started = time.perf_counter()
+    answer = call_jarvis_reply(prompt, chat_id, "essay", [], attachments)
+    return JSONResponse(
+        {
+            "answer": answer,
+            "checked_at": now_stamp(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        }
+    )
 
 
 @app.delete("/api/device")

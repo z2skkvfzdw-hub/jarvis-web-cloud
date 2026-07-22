@@ -111,6 +111,7 @@ version is not the expected deployed build.
 
 - Anonymous, device-owned chat history stored in the user's browser
 - Optional Google sign-in, account profile, cross-device chat routing, data export, and account deletion
+- Per-conversation essay workspace with rubric and teacher-feedback uploads, autosaved drafts, restorable versions, and AI rubric checks
 - Nine chat modes backed by NVIDIA, with optional OpenRouter fallback
 - In-memory document extraction for PDF, DOCX, PPTX, text, code, CSV, JSON, and Markdown files
 - Streaming response endpoint for chat clients that want incremental output
