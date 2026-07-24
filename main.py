@@ -44,8 +44,8 @@ except Exception:
 
 
 APP_TITLE = "Jarivs"
-APP_VERSION = "2.0.0"
-CACHE_VERSION = "jarvis-ai-2-0-0"
+APP_VERSION = "2.1.0"
+CACHE_VERSION = "jarvis-ai-2-1-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -228,6 +228,9 @@ class ChatRequest(BaseModel):
     history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES)
     attachments: list[AttachmentContext] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
     assignment_memory: list[AssignmentMemoryItem] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+    conversation_summary: str = Field(default="", max_length=1200)
+    preferred_name: str = Field(default="", max_length=60)
+    custom_instructions: str = Field(default="", max_length=800)
 
 
 class EssaySelfCheckRequest(BaseModel):
@@ -812,6 +815,7 @@ def cloud_generate(
     history: list[dict[str, str]] | None = None,
     mode: ChatMode = "chat",
     system_prompt: str | None = None,
+    extra_instructions: str = "",
 ) -> str | None:
     providers = available_cloud_providers()
     if not providers:
@@ -819,23 +823,22 @@ def cloud_generate(
 
     mode_prompt = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["chat"])
 
-    messages: list[dict[str, str]] = [
-        {
-            "role": "system",
-            "content": system_prompt or (
-                "You are Jarvis.AI, a public cloud version of Jarvis. "
-                "You are not running on the owner's laptop, so you cannot open local apps, read local files, "
-                "control Windows, use local Ollama, or access private owner memory. "
-                "You can reason, plan, explain, tutor, brainstorm, summarize, write, review code, analyse designs, "
-                "and use web search results when provided. Read the complete conversation and infer reasonable intent. "
-                "Begin with the useful answer, recommendation, or next action. For complex work, privately check assumptions, "
-                "constraints, alternatives, risks, and test criteria, then present only the conclusion and useful reasoning. "
-                "Never reveal chain-of-thought. Sound calm, intelligent, candid, and natural. Avoid canned acknowledgements "
-                "and unnecessary follow-up questions. Do not pretend to have device control."
-                + mode_prompt
-            ),
-        }
-    ]
+    base_system = system_prompt or (
+        "You are Jarvis.AI, a public cloud version of Jarvis. "
+        "You are not running on the owner's laptop, so you cannot open local apps, read local files, "
+        "control Windows, use local Ollama, or access private owner memory. "
+        "You can reason, plan, explain, tutor, brainstorm, summarize, write, review code, analyse designs, "
+        "and use web search results when provided. Read the complete conversation and infer reasonable intent. "
+        "Begin with the useful answer, recommendation, or next action. For complex work, privately check assumptions, "
+        "constraints, alternatives, risks, and test criteria, then present only the conclusion and useful reasoning. "
+        "Never reveal chain-of-thought. Sound calm, intelligent, candid, and natural. Avoid canned acknowledgements "
+        "and unnecessary follow-up questions. Do not pretend to have device control."
+        + mode_prompt
+    )
+    if extra_instructions:
+        base_system = f"{base_system}\n\n{extra_instructions}"
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": base_system}]
     if history:
         for item in history[-MAX_HISTORY_MESSAGES:]:
             role = "assistant" if item.get("role") in {"Jarvis", "Pet"} else "user"
@@ -1473,6 +1476,9 @@ def call_jarvis_reply(
     mode: ChatMode,
     history_override: list[dict[str, str]],
     attachments: list[AttachmentContext],
+    conversation_summary: str = "",
+    preferred_name: str = "",
+    custom_instructions: str = "",
 ) -> str:
     parameters = inspect.signature(jarvis_reply).parameters
     kwargs: dict[str, Any] = {}
@@ -1480,7 +1486,37 @@ def call_jarvis_reply(
         kwargs["history_override"] = history_override
     if "attachments" in parameters:
         kwargs["attachments"] = attachments
+    if "conversation_summary" in parameters:
+        kwargs["conversation_summary"] = conversation_summary
+    if "preferred_name" in parameters:
+        kwargs["preferred_name"] = preferred_name
+    if "custom_instructions" in parameters:
+        kwargs["custom_instructions"] = custom_instructions
     return jarvis_reply(text, chat_id, mode, **kwargs)
+
+
+def personalization_instructions(
+    conversation_summary: str = "",
+    preferred_name: str = "",
+    custom_instructions: str = "",
+) -> str:
+    parts = []
+    if preferred_name:
+        parts.append(
+            f"The user prefers to be called {preferred_name}. Use that name naturally where it fits; do not force it "
+            "into every message."
+        )
+    if custom_instructions:
+        parts.append(
+            "The user has saved these standing instructions for how you should respond. Follow them unless they "
+            f"conflict with safety: {custom_instructions}"
+        )
+    if conversation_summary:
+        parts.append(
+            "Summary of this conversation before the most recent messages shown below (use for continuity, do not "
+            f"repeat it back verbatim): {conversation_summary}"
+        )
+    return " ".join(parts)
 
 
 def jarvis_reply(
@@ -1489,11 +1525,15 @@ def jarvis_reply(
     mode: ChatMode = "chat",
     history_override: list[dict[str, str]] | None = None,
     attachments: list[AttachmentContext] | None = None,
+    conversation_summary: str = "",
+    preferred_name: str = "",
+    custom_instructions: str = "",
 ) -> str:
     text = clean_text(user_text)
     lowered = text.lower()
     history = history_override if history_override is not None else load_chat(chat_id)
     model_text = attachment_prompt(text, attachments or []) if attachments else text
+    extra_instructions = personalization_instructions(conversation_summary, preferred_name, custom_instructions)
 
     if not text:
         return "Send me a message first."
@@ -1512,6 +1552,7 @@ def jarvis_reply(
             f"Question: {query}\n\n{search_results}",
             history,
             mode=mode,
+            extra_instructions=extra_instructions,
         )
         return brain or search_results
 
@@ -1536,6 +1577,7 @@ def jarvis_reply(
                 f"Research question: {text}\n\nWeb results:\n{search_results}",
                 history,
                 mode="research",
+                extra_instructions=extra_instructions,
             )
             answer = reply or search_results
             sources = build_citation_sources(results)
@@ -1544,10 +1586,10 @@ def jarvis_reply(
             return answer
 
     if mode == "engineer":
-        reply = cloud_generate(model_text, history, mode="engineer")
+        reply = cloud_generate(model_text, history, mode="engineer", extra_instructions=extra_instructions)
         return reply or engineering_fallback(text)
 
-    reply = cloud_generate(model_text, history, mode=mode)
+    reply = cloud_generate(model_text, history, mode=mode, extra_instructions=extra_instructions)
     if reply:
         return reply
 
@@ -3133,6 +3175,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 <form action="/new" method="post"><button class="nav-item nav-primary" type="submit"><span class="nav-icon">+</span><span>New chat</span></button></form>
                 {auth_nav}
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
+                <button class="nav-item" id="recap-toggle" type="button" title="Summarize this conversation so far"><span class="nav-icon">&#8734;</span><span>Recap session</span></button>
+                <button class="nav-item" id="personalize-toggle" type="button" title="Save your preferred name and custom instructions"><span class="nav-icon">&#9881;</span><span>Personalize</span></button>
                 <a class="nav-item" href="/essay/{chat_id}"><span class="nav-icon">E</span><span>Essay workspace</span></a>
                 <a class="nav-item" href="/study/{chat_id}"><span class="nav-icon">S</span><span>Study workspace</span></a>
                 <a class="nav-item" href="/roadmap"><span class="nav-icon">R</span><span>Roadmap</span></a>
@@ -3242,6 +3286,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         const chatSearchToggle = document.getElementById("chat-search-toggle");
         const chatSearchWrap = document.getElementById("chat-search-wrap");
         const chatSearch = document.getElementById("chat-search");
+        const recapToggle = document.getElementById("recap-toggle");
+        const personalizeToggle = document.getElementById("personalize-toggle");
         const exportDeviceData = document.getElementById("export-device-data");
         const deleteDeviceData = document.getElementById("delete-device-data");
         const assignmentAttach = document.getElementById("assignment-attach");
@@ -3305,6 +3351,23 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         const chatMemoryKey = `jarvis_chat_memory_${{chatId}}_v1`;
         const assignmentMemoryKey = `jarvis_assignment_memory_${{chatId}}_v1`;
         const chatIndexKey = "jarvis_chat_index_v1";
+        const conversationSummaryKey = `jarvis_conversation_summary_${{chatId}}_v1`;
+        const preferredNameKey = "jarvis_preferred_name_v1";
+        const customInstructionsKey = "jarvis_custom_instructions_v1";
+        function getConversationSummary() {{
+            if (!deviceMemoryEnabled) return "";
+            return String(localStorage.getItem(conversationSummaryKey) || "").slice(0, 1200);
+        }}
+        function saveConversationSummary(text) {{
+            if (!deviceMemoryEnabled) return;
+            try {{ localStorage.setItem(conversationSummaryKey, String(text || "").slice(0, 1200)); }} catch (error) {{}}
+        }}
+        function getPreferredName() {{
+            try {{ return String(localStorage.getItem(preferredNameKey) || "").slice(0, 60); }} catch (error) {{ return ""; }}
+        }}
+        function getCustomInstructions() {{
+            try {{ return String(localStorage.getItem(customInstructionsKey) || "").slice(0, 800); }} catch (error) {{ return ""; }}
+        }}
 
         function scrollDown() {{ chat.scrollTop = chat.scrollHeight; }}
         function setCoreState(label, busy = false) {{
@@ -4000,6 +4063,46 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 row.hidden = Boolean(query) && !String(row.dataset.title || "").includes(query);
             }});
         }});
+        if (recapToggle) recapToggle.addEventListener("click", async () => {{
+            if (!deviceMemoryEnabled) return;
+            const history = getChatMemory().slice(-{MAX_HISTORY_MESSAGES * 4});
+            if (!history.length) {{
+                showChatToast("Nothing to recap yet.");
+                return;
+            }}
+            recapToggle.disabled = true;
+            try {{
+                const response = await fetch(`/api/chats/${{chatId}}/recap`, {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ history, mode: activeMode }})
+                }});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || "Recap is unavailable right now.");
+                const article = addMessage("Jarvis", data.recap, data.recap_html);
+                attachMessageActions(article, {{ includeRegenerate: false }});
+                saveConversationSummary(data.recap);
+            }} catch (error) {{
+                showChatToast(error.message || "Recap is unavailable right now.");
+            }} finally {{
+                recapToggle.disabled = false;
+            }}
+        }});
+        if (personalizeToggle) personalizeToggle.addEventListener("click", () => {{
+            const currentName = getPreferredName();
+            const nextName = window.prompt("What should Jarvis call you? (leave blank for none)", currentName);
+            if (nextName !== null) {{
+                try {{ localStorage.setItem(preferredNameKey, nextName.trim().slice(0, 60)); }} catch (error) {{}}
+            }}
+            const currentInstructions = getCustomInstructions();
+            const nextInstructions = window.prompt(
+                "Any standing instructions for how Jarvis should respond? (leave blank for none)",
+                currentInstructions
+            );
+            if (nextInstructions !== null) {{
+                try {{ localStorage.setItem(customInstructionsKey, nextInstructions.trim().slice(0, 800)); }} catch (error) {{}}
+            }}
+        }});
         function showChatToast(message, actionLabel, onAction) {{
             let toast = document.getElementById("chat-toast");
             if (!toast) {{
@@ -4230,7 +4333,15 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory, assignment_memory: assignmentMemory }}),
+                    body: JSON.stringify({{
+                        message: text,
+                        mode: activeMode,
+                        history: requestHistory,
+                        assignment_memory: assignmentMemory,
+                        conversation_summary: getConversationSummary(),
+                        preferred_name: getPreferredName(),
+                        custom_instructions: getCustomInstructions()
+                    }}),
                     signal: controller.signal
                 }});
                 const data = await response.json();
@@ -5369,7 +5480,16 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     started = time.perf_counter()
-    answer = call_jarvis_reply(text, chat_id, payload.mode, model_history, context_attachments)
+    answer = call_jarvis_reply(
+        text,
+        chat_id,
+        payload.mode,
+        model_history,
+        context_attachments,
+        conversation_summary=clean_text(payload.conversation_summary),
+        preferred_name=clean_text(payload.preferred_name),
+        custom_instructions=clean_text(payload.custom_instructions),
+    )
     if not DEVICE_MEMORY_ENABLED:
         messages.append(user_message_record(text, payload.mode, context_attachments))
         messages.append(assistant_message_record(answer, payload.mode))
@@ -5385,6 +5505,43 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
         }
     )
+
+
+class RecapRequest(BaseModel):
+    history: list[ChatHistoryItem] = Field(default_factory=list, max_length=MAX_HISTORY_MESSAGES * 4)
+    mode: ChatMode = "chat"
+
+
+@app.post("/api/chats/{chat_id}/recap")
+def api_chat_recap(chat_id: str, payload: RecapRequest, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    chat_id = canonical_id(chat_id) or ""
+    if not chat_id or not STORE.owns_chat(device_id, chat_id):
+        return JSONResponse({"detail": "Conversation not found."}, status_code=404)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+    transcript_lines = []
+    for item in payload.history:
+        role = "Jarvis" if item.role.lower() in {"jarvis", "assistant", "pet"} else "user"
+        content = clean_text(item.content)[:2500]
+        if content:
+            transcript_lines.append(f"{role}: {content}")
+    if not transcript_lines:
+        return JSONResponse({"detail": "There is nothing to recap yet."}, status_code=400)
+    transcript = "\n".join(transcript_lines)
+    summary = cloud_generate(
+        "Summarize what was covered and learned in this conversation so far in 3-6 short bullet points. Focus on "
+        "concrete topics, decisions, and any open questions. Do not include pleasantries or a heading.\n\n" + transcript,
+        mode=payload.mode,
+        system_prompt=(
+            "You write extremely concise conversation recaps for a study and assistant app. Output plain bullet "
+            "points only, no headings, no preamble, no closing remarks."
+        ),
+    )
+    if not summary:
+        return JSONResponse({"detail": "Recap is unavailable right now."}, status_code=503)
+    return JSONResponse({"recap": summary, "recap_html": render_content(summary)})
 
 
 class RenderBatchRequest(BaseModel):
