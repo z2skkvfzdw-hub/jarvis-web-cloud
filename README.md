@@ -31,6 +31,8 @@ Render needs these environment variables:
 JARVIS_CLOUD_PROVIDER=nvidia
 JARVIS_PROVIDER_CHAIN=nvidia,openrouter
 JARVIS_DEVICE_MEMORY=true
+JARVIS_ANALYTICS_ENABLED=true
+JARVIS_USAGE_METRICS_ENABLED=true
 JARVIS_ENABLE_GROQ=false
 NVIDIA_API_KEY=<secret NVIDIA key>
 NVIDIA_MODEL=openai/gpt-oss-120b
@@ -41,6 +43,10 @@ DATABASE_URL=<private PostgreSQL connection string>
 JARVIS_ADSENSE_CLIENT=ca-pub-xxxxxxxxxxxxxxxx
 JARVIS_ADSENSE_SLOT_SIDEBAR=<AdSense slot id>
 JARVIS_ADSENSE_SLOT_COMPOSER=<AdSense slot id>
+JARVIS_ADMIN_EMAILS=<comma-separated owner Google email addresses>
+JARVIS_ADMIN_SUBJECTS=<optional comma-separated Google subject ids>
+JARVIS_NVIDIA_INPUT_USD_PER_MILLION=<current input price for the configured model>
+JARVIS_NVIDIA_OUTPUT_USD_PER_MILLION=<current output price for the configured model>
 JARVIS_GOOGLE_CLIENT_ID=<Google OAuth client id>
 JARVIS_GOOGLE_CLIENT_SECRET=<Google OAuth client secret>
 JARVIS_GOOGLE_REDIRECT_URI=https://jarvis-web-cloud.onrender.com/auth/google/callback
@@ -53,7 +59,9 @@ and optionally set `JARVIS_GROQ_MODEL=llama-3.3-70b-versatile`. Never commit sec
 main chat memory is stored in the user's browser, so Render does not need PostgreSQL for
 public chat history. `DATABASE_URL` is still useful for server-owned features later.
 The `JARVIS_ADSENSE_*` settings are optional. Ads stay disabled unless a valid
-AdSense client id and at least one numeric slot id are configured.
+AdSense client id and at least one numeric slot id are configured. Before
+enabling ads publicly, the operator is responsible for AdSense approval,
+required consent tooling, and policies that apply to the audience and regions.
 The `JARVIS_GOOGLE_*` settings are optional. Google sign-in stays hidden unless
 both the client id and client secret are configured. The OAuth redirect URI in
 Google Cloud must exactly match `/auth/google/callback` on the public Render URL.
@@ -70,6 +78,29 @@ Signed-in users can open `/account` to view their profile, download a combined
 export of server-owned records and browser-held chat memory, delete their data,
 or sign out. Anonymous users have the same export and deletion controls for the
 current browser without being required to create an account.
+
+## Public launch controls
+
+- `/roadmap` shows the current public roadmap without requiring an account.
+- `/feedback` accepts rate-limited bug reports, feature requests, safety
+  concerns, accessibility feedback, and general feedback. Contact details are
+  optional.
+- `/admin/costs` shows 30-day aggregate traffic, provider attempts, errors,
+  token counts, estimated cost, and recent feedback only to a signed-in Google
+  identity listed in `JARVIS_ADMIN_EMAILS` or `JARVIS_ADMIN_SUBJECTS`.
+
+Analytics are first-party aggregate counters. They never store prompts,
+responses, chat ids, account ids, or IP addresses and are retained for up to
+120 days. Feedback is retained for up to 365 days. Set
+`JARVIS_ANALYTICS_ENABLED=false` or `JARVIS_USAGE_METRICS_ENABLED=false` to turn
+off either stream.
+
+Provider prices are deliberately not hard-coded because they change. Configure
+the active provider's current USD prices per million tokens, for example
+`JARVIS_NVIDIA_INPUT_USD_PER_MILLION` and
+`JARVIS_NVIDIA_OUTPUT_USD_PER_MILLION`. Equivalent `OPENROUTER` and `GROQ`
+variable names are supported. Until rates are configured, the dashboard shows
+token counts and clearly marks monetary totals as unconfigured.
 
 ## Render URL note
 
@@ -120,6 +151,9 @@ version is not the expected deployed build.
 - Mobile chat navigation and installable PWA shell
 - Signed sessions, rate limits, security headers, and privacy controls
 - Optional Google AdSense slots controlled by Render environment variables
+- Privacy-preserving aggregate launch analytics with no chat-content capture
+- Rate-limited public feedback and a transparent public roadmap
+- Owner-only provider usage, reliability, token, and estimated-cost dashboard
 - PostgreSQL persistence when `DATABASE_URL` is configured
 
 This build deliberately has no access to desktop files, apps, commands, Ollama,

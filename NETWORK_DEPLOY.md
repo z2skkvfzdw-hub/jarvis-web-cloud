@@ -18,6 +18,8 @@ Use these URLs to check whether Jarvis.AI is online:
 ```text
 https://jarvis-web-cloud.onrender.com/health
 https://jarvis-web-cloud.onrender.com/status
+https://jarvis-web-cloud.onrender.com/roadmap
+https://jarvis-web-cloud.onrender.com/feedback
 ```
 
 ## Phone And Tablet
@@ -29,3 +31,7 @@ Open the Render URL in Safari or Chrome. Then use Add to Home Screen. Jarvis.AI 
 The cloud web version can chat, search, show image ideas, and save per-device chat history.
 
 The cloud web version cannot open apps, read files, run terminal commands, or control the owner's laptop. Those features require the desktop Jarvis running on the computer.
+
+The owner-only launch dashboard is available at `/admin/costs` after Google
+sign-in and `JARVIS_ADMIN_EMAILS` or `JARVIS_ADMIN_SUBJECTS` are configured on
+the host. It never exposes prompts or responses.

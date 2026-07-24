@@ -13,6 +13,10 @@ services:
         value: nvidia,openrouter
       - key: JARVIS_DEVICE_MEMORY
         value: "true"
+      - key: JARVIS_ANALYTICS_ENABLED
+        value: "true"
+      - key: JARVIS_USAGE_METRICS_ENABLED
+        value: "true"
       - key: JARVIS_ENABLE_GROQ
         value: "false"
       - key: NVIDIA_MODEL
@@ -30,4 +34,6 @@ services:
       - key: JARVIS_PUBLIC_ORIGIN
         value: https://jarvis-web-cloud.onrender.com
       - key: DATABASE_URL
+        sync: false
+      - key: JARVIS_ADMIN_EMAILS
         sync: false

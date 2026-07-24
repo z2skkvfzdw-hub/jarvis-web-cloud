@@ -16,7 +16,8 @@ import time
 import uuid
 import zipfile
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -43,8 +44,8 @@ except Exception:
 
 
 APP_TITLE = "Jarivs"
-APP_VERSION = "1.9.0"
-CACHE_VERSION = "jarvis-ai-1-9-0"
+APP_VERSION = "2.0.0"
+CACHE_VERSION = "jarvis-ai-2-0-0"
 DATA_DIR = Path(os.environ.get("JARVIS_CLOUD_DATA_DIR", "cloud_chats"))
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 DATA_DIR.mkdir(exist_ok=True)
@@ -55,6 +56,32 @@ DEFAULT_MODEL = os.environ.get("JARVIS_CLOUD_MODEL", "").strip()
 ADSENSE_CLIENT = os.environ.get("JARVIS_ADSENSE_CLIENT", "").strip()
 ADSENSE_SLOT_SIDEBAR = os.environ.get("JARVIS_ADSENSE_SLOT_SIDEBAR", "").strip()
 ADSENSE_SLOT_COMPOSER = os.environ.get("JARVIS_ADSENSE_SLOT_COMPOSER", "").strip()
+ANALYTICS_ENABLED = os.environ.get("JARVIS_ANALYTICS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+USAGE_METRICS_ENABLED = os.environ.get("JARVIS_USAGE_METRICS_ENABLED", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+PUBLIC_ANALYTICS_EVENTS = frozenset(
+    {
+        "session_start",
+        "chat_created",
+        "chat_open",
+        "chat_request",
+        "chat_response",
+        "chat_error",
+        "attachment_extract",
+        "pet_request",
+        "essay_open",
+        "essay_check",
+        "study_open",
+        "study_plan",
+        "study_flashcards",
+        "study_quiz",
+        "roadmap_open",
+        "feedback_open",
+        "feedback_submit",
+        "privacy_open",
+    }
+)
 ENABLE_GROQ = os.environ.get("JARVIS_ENABLE_GROQ", "false").lower() in {"1", "true", "yes", "on"}
 ChatMode = Literal["chat", "study", "essay", "math", "science", "code", "research", "create", "engineer"]
 CHAT_MODES: tuple[ChatMode, ...] = ("chat", "study", "essay", "math", "science", "code", "research", "create", "engineer")
@@ -173,7 +200,7 @@ async def add_web_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     elif request.url.path in {"/manifest.json", "/icon.svg", "/offline"}:
         response.headers["Cache-Control"] = "public, max-age=3600"
-    elif request.url.path.startswith(("/chat/", "/essay/", "/study/", "/account", "/api/")) or request.url.path == "/":
+    elif request.url.path.startswith(("/chat/", "/essay/", "/study/", "/account", "/admin/", "/api/")) or request.url.path in {"/", "/feedback"}:
         response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -227,6 +254,16 @@ class StudyToolRequest(BaseModel):
     count: int = Field(default=8, ge=3, le=20)
 
 
+FeedbackCategory = Literal["general", "bug", "feature", "safety", "accessibility"]
+
+
+class FeedbackRequest(BaseModel):
+    category: FeedbackCategory = "general"
+    message: str = Field(min_length=3, max_length=2000)
+    contact: str = Field(default="", max_length=240)
+    company: str = Field(default="", max_length=120)
+
+
 class SlidingRateLimiter:
     def __init__(self, requests: int, seconds: int) -> None:
         self.requests = requests
@@ -251,10 +288,96 @@ class SlidingRateLimiter:
 
 
 CHAT_RATE_LIMITER = SlidingRateLimiter(RATE_LIMIT_REQUESTS, RATE_LIMIT_SECONDS)
+FEEDBACK_RATE_LIMITER = SlidingRateLimiter(5, 3600)
 
 
 def now_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def utc_day() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def record_public_event(event: str) -> None:
+    if not ANALYTICS_ENABLED or event not in PUBLIC_ANALYTICS_EVENTS:
+        return
+    try:
+        STORE.record_event(utc_day(), event)
+    except Exception as exc:
+        LOGGER.warning("Launch analytics write failed: %s", type(exc).__name__)
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def provider_cost_rates(provider: str) -> tuple[Decimal, Decimal, bool]:
+    prefix = re.sub(r"[^A-Z0-9]", "_", provider.upper())
+    raw_input = os.environ.get(f"JARVIS_{prefix}_INPUT_USD_PER_MILLION", "").strip()
+    raw_output = os.environ.get(f"JARVIS_{prefix}_OUTPUT_USD_PER_MILLION", "").strip()
+    def parse(value: str) -> tuple[Decimal, bool]:
+        if not value:
+            return Decimal(0), False
+        try:
+            amount = Decimal(value or "0")
+            if amount.is_finite() and Decimal(0) <= amount <= Decimal("1000000"):
+                return amount, True
+        except (InvalidOperation, ValueError):
+            pass
+        return Decimal(0), False
+
+    input_rate, input_valid = parse(raw_input)
+    output_rate, output_valid = parse(raw_output)
+    return input_rate, output_rate, bool(input_valid and output_valid)
+
+
+def pricing_configured() -> bool:
+    return any(provider_cost_rates(provider)[2] for provider in ("nvidia", "openrouter", "groq"))
+
+
+def record_provider_result(
+    provider: str,
+    model: str,
+    data: dict[str, Any] | None,
+    messages: list[dict[str, str]],
+    answer: str,
+    *,
+    success: bool,
+) -> None:
+    if not USAGE_METRICS_ENABLED:
+        return
+    try:
+        usage = data.get("usage", {}) if isinstance(data, dict) and isinstance(data.get("usage"), dict) else {}
+        input_tokens = _nonnegative_int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
+        output_tokens = _nonnegative_int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+        estimated = False
+        if success and (input_tokens <= 0 or output_tokens <= 0):
+            estimated = True
+            if input_tokens <= 0:
+                input_characters = sum(len(str(item.get("content", ""))) for item in messages)
+                input_tokens = max(1, (input_characters + 3) // 4)
+            if output_tokens <= 0:
+                output_tokens = max(1, (len(answer) + 3) // 4)
+        input_rate, output_rate, _ = provider_cost_rates(provider)
+        cost_micros = int(
+            (Decimal(input_tokens) * input_rate + Decimal(output_tokens) * output_rate).to_integral_value()
+        )
+        STORE.record_usage(
+            utc_day(),
+            provider,
+            model,
+            input_tokens=input_tokens if success else 0,
+            output_tokens=output_tokens if success else 0,
+            estimated_cost_micros=cost_micros if success else 0,
+            success=success,
+            estimated=estimated,
+        )
+    except Exception as exc:
+        LOGGER.warning("Provider usage write failed: %s", type(exc).__name__)
 
 
 def clean_text(text: str) -> str:
@@ -398,6 +521,25 @@ def google_login_configured() -> bool:
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 
 
+def configured_admin_values(name: str) -> set[str]:
+    return {item.strip().casefold() for item in os.environ.get(name, "").split(",") if item.strip()}
+
+
+def admin_identity_configured() -> bool:
+    return bool(configured_admin_values("JARVIS_ADMIN_EMAILS") or configured_admin_values("JARVIS_ADMIN_SUBJECTS"))
+
+
+def is_admin_profile(profile: dict[str, Any] | None) -> bool:
+    if not profile:
+        return False
+    email = str(profile.get("email", "")).strip().casefold()
+    subject = str(profile.get("sub", "")).strip().casefold()
+    return bool(
+        (profile.get("email_verified") is True and email and email in configured_admin_values("JARVIS_ADMIN_EMAILS"))
+        or (subject and subject in configured_admin_values("JARVIS_ADMIN_SUBJECTS"))
+    )
+
+
 def account_device_id(google_subject: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"jarvis-google:{google_subject}"))
 
@@ -422,6 +564,7 @@ def signed_auth_cookie(profile: dict[str, Any]) -> str:
         "sub": subject,
         "email": str(profile.get("email", "")).strip()[:240],
         "name": str(profile.get("name", "")).strip()[:160],
+        "email_verified": profile.get("email_verified") is True,
         "iat": int(time.time()),
     }
     raw = _b64_json(payload)
@@ -450,6 +593,7 @@ def verified_auth_cookie(value: str) -> dict[str, Any] | None:
         "sub": subject,
         "email": str(payload.get("email", "")).strip(),
         "name": str(payload.get("name", "")).strip(),
+        "email_verified": payload.get("email_verified") is True,
         "iat": issued_at,
     }
 
@@ -506,9 +650,15 @@ def auth_status_html(profile: dict[str, Any] | None) -> str:
 
 def auth_nav_html(profile: dict[str, Any] | None) -> str:
     if profile:
+        admin_link = (
+            '<a class="nav-item" href="/admin/costs"><span class="nav-icon">$</span><span>Launch metrics</span></a>'
+            if is_admin_profile(profile)
+            else ""
+        )
         return (
             '<a class="nav-item" href="/account"><span class="nav-icon">&#9679;</span><span>Account</span></a>'
-            '<a class="nav-item" href="/logout"><span class="nav-icon">&#8634;</span><span>Sign out</span></a>'
+            + admin_link
+            + '<a class="nav-item" href="/logout"><span class="nav-icon">&#8634;</span><span>Sign out</span></a>'
         )
     if google_login_configured():
         return (
@@ -522,6 +672,12 @@ def client_rate_key(request: Request, device_id: str) -> str:
     forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "").split(",", 1)[0]
     client = forwarded.strip() or (request.client.host if request.client else "unknown")
     return hashlib.sha256(f"{client}:{device_id}".encode("utf-8")).hexdigest()
+
+
+def feedback_rate_key(request: Request) -> str:
+    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "").split(",", 1)[0]
+    client = forwarded.strip() or (request.client.host if request.client else "unknown")
+    return hashlib.sha256(f"feedback:{client}".encode("utf-8")).hexdigest()
 
 
 def rate_limit_response(request: Request, device_id: str) -> JSONResponse | None:
@@ -735,8 +891,10 @@ def cloud_generate(
             data = response.json()
             answer = clean_text(data["choices"][0]["message"]["content"])
             if answer:
+                record_provider_result(provider, model, data, messages, answer, success=True)
                 return answer
         except Exception as exc:
+            record_provider_result(provider, model, None, messages, "", success=False)
             LOGGER.warning("Cloud brain request failed for %s: %s", provider, type(exc).__name__)
             continue
     return None
@@ -2639,6 +2797,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 <button class="nav-item" id="chat-search-toggle" type="button"><span class="nav-icon">&#8981;</span><span>Search chats</span></button>
                 <a class="nav-item" href="/essay/{chat_id}"><span class="nav-icon">E</span><span>Essay workspace</span></a>
                 <a class="nav-item" href="/study/{chat_id}"><span class="nav-icon">S</span><span>Study workspace</span></a>
+                <a class="nav-item" href="/roadmap"><span class="nav-icon">R</span><span>Roadmap</span></a>
+                <a class="nav-item" href="/feedback"><span class="nav-icon">?</span><span>Feedback</span></a>
                 <a class="nav-item" href="/privacy"><span class="nav-icon">i</span><span>Privacy</span></a>
             </nav>
             <label class="chat-search" id="chat-search-wrap" hidden>
@@ -3044,8 +3204,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             const lowered = String(value || "").toLowerCase();
             const parts = ["mount", "bracket", "adapter", "holder", "enclosure", "housing", "hinge", "joint", "gear", "linkage", "chassis", "fixture", "clamp", "mechanism", "robot arm", "helmet", "wearable", "3d print", "openscad", "solidworks", "fusion 360"];
             const actions = ["design", "engineer", "model", "prototype", "fabricate", "build", "make", "fit", "attach", "calculate"];
-            if (/^(engineer|engineering|cad|prototype)\s*:/.test(lowered)) return true;
-            return parts.some(part => lowered.includes(part)) && (actions.some(action => lowered.includes(action)) || lowered.split(/\s+/).length >= 4);
+            if (/^(engineer|engineering|cad|prototype)\\s*:/.test(lowered)) return true;
+            return parts.some(part => lowered.includes(part)) && (actions.some(action => lowered.includes(action)) || lowered.split(/\\s+/).length >= 4);
         }}
         function updateEngineeringDashboard(stateLabel) {{
             const active = engineeringState.active;
@@ -3057,7 +3217,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             if (engineeringExport) engineeringExport.disabled = !engineeringState.latestBrief;
         }}
         function activateEngineeringProject(text) {{
-            const cleaned = String(text || "").replace(/^(engineer|engineering|cad|prototype)\s*:\s*/i, "").trim();
+            const cleaned = String(text || "").replace(/^(engineer|engineering|cad|prototype)\\s*:\\s*/i, "").trim();
             engineeringState.active = true;
             engineeringState.title = (cleaned || "Physical design project").slice(0, 78);
             saveEngineeringState();
@@ -3853,43 +4013,272 @@ def account_page_html(request: Request, csp_nonce: str) -> str:
 </script></body></html>"""
 
 
-@app.get("/privacy", response_class=HTMLResponse)
-def privacy() -> HTMLResponse:
-    return HTMLResponse(
-        f"""<!doctype html>
+def public_page_csp_header() -> str:
+    return (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; "
+        "frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+    )
+
+
+def public_page_html(title: str, active: str, content: str, *, script: str = "") -> str:
+    links = (("Chat", "/", "chat"), ("Roadmap", "/roadmap", "roadmap"), ("Feedback", "/feedback", "feedback"), ("Privacy", "/privacy", "privacy"))
+    navigation_parts = []
+    for label, href, key in links:
+        current = ' aria-current="page"' if key == active else ""
+        navigation_parts.append(f'<a href="{href}"{current}>{label}</a>')
+    navigation = "".join(navigation_parts)
+    script_tag = f'<script src="{html.escape(script, quote=True)}" defer></script>' if script else ""
+    return f"""<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Privacy | {html.escape(APP_TITLE)}</title>
-    <style>
-        body {{ margin: 0; background: #071018; color: #eaf6ff; font: 16px/1.6 system-ui, sans-serif; }}
-        main {{ width: min(720px, calc(100% - 40px)); margin: 56px auto; }}
-        h1, h2 {{ line-height: 1.2; }}
-        h2 {{ margin-top: 30px; font-size: 19px; }}
-        p, li {{ color: #b9cad5; }}
-        a {{ color: #70e4dc; }}
-        code {{ color: #fff; }}
-    </style>
+    <title>{html.escape(title)} | {html.escape(APP_TITLE)}</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/assets/public-launch.css">
+    {script_tag}
 </head>
-<body><main>
-    <p><a href="/">Back to Jarvis</a></p>
-    <h1>Privacy</h1>
-    <p>Jarvis can be used anonymously, and Google sign-in can be enabled by the site owner. Anonymous chats belong to this browser. Signed-in chats belong to the Google account identifier returned by Google, so the same account can reopen its Jarvis conversations on another device.</p>
-    <h2>What is stored</h2>
-    <p>Main chat text, chat titles, essay drafts, uploaded rubric text, teacher feedback, saved draft versions, subject profiles, study materials, and progress are stored in this browser's local storage. The server keeps lightweight conversation identifiers for routing and may keep companion-chat text. If you sign in with Google, Jarvis keeps a signed browser session containing your Google account id and may show your name or email in the sidebar. Jarvis never sees your Google password.</p>
-    <h2>AI requests</h2>
-    <p>When you send a message, run an essay rubric check, or explicitly generate a study plan, flashcard deck, or quiz, the material needed for that result is sent to the configured AI provider. That context is not used by Jarvis as permanent server memory.</p>
-    <h2>AI providers</h2>
-    <p>Messages sent for an AI response are forwarded to the configured cloud AI provider. Do not enter passwords, payment details, medical records, or other information you would not want processed by that provider.</p>
-    <h2>Ads</h2>
-    <p>If ads are enabled, Jarvis may load Google AdSense advertising scripts. Those ads are controlled by Google and may use cookies or similar browser signals according to Google's advertising policies. Ads are disabled unless the site owner configures AdSense on the server.</p>
-    <h2>Your controls</h2>
-    <p>Use <strong>Export my data</strong> to download this browser's stored conversations. Use <strong>Delete my data</strong> to remove them from this browser and clear server routing data for this browser or signed-in account. Use <strong>Sign out</strong> to clear the Google session cookie on this browser.</p>
-    <h2>Device control</h2>
-    <p>This public version cannot open apps, read files, or control the computer running your private Jarvis installation.</p>
-</main></body></html>"""
+<body>
+    <header class="site-header">
+        <div class="header-inner">
+            <a class="brand" href="/"><span class="brand-mark">J</span><span>{html.escape(APP_TITLE)}</span></a>
+            <nav class="site-nav" aria-label="Public navigation">{navigation}</nav>
+        </div>
+    </header>
+    <main>{content}</main>
+</body>
+</html>"""
+
+
+def feedback_page_html() -> str:
+    return public_page_html(
+        "Feedback",
+        "feedback",
+        """
+        <header class="page-intro">
+            <span class="eyebrow">Public launch</span>
+            <h1>Help improve Jarvis</h1>
+            <p>Report a problem, request a useful feature, or tell us what made learning easier or harder.</p>
+        </header>
+        <section class="page-section">
+            <form id="feedback-form">
+                <div class="field-grid">
+                    <label>Type
+                        <select name="category">
+                            <option value="general">General feedback</option>
+                            <option value="bug">Bug report</option>
+                            <option value="feature">Feature request</option>
+                            <option value="safety">Safety concern</option>
+                            <option value="accessibility">Accessibility</option>
+                        </select>
+                    </label>
+                    <label>What should we know?
+                        <textarea name="message" minlength="3" maxlength="2000" required placeholder="Describe what happened, what you expected, or what would help."></textarea>
+                        <span>Do not include passwords, private school records, or other sensitive information.</span>
+                    </label>
+                </div>
+                <label>Contact (optional)
+                    <input name="contact" type="text" maxlength="240" autocomplete="email" placeholder="Email or another way to reply">
+                    <span>Leave this blank to submit anonymously.</span>
+                </label>
+                <label class="honeypot" aria-hidden="true">Company<input name="company" type="text" tabindex="-1" autocomplete="off"></label>
+                <div class="form-actions">
+                    <button id="feedback-submit" type="submit">Send feedback</button>
+                    <p class="form-status" id="feedback-status" role="status" aria-live="polite"></p>
+                </div>
+            </form>
+            <p class="privacy-note">Feedback is stored separately from chats for up to 365 days. Aggregate launch counters never contain prompts or account identifiers.</p>
+        </section>
+        """,
+        script="/assets/feedback.js",
     )
+
+
+def roadmap_page_html() -> str:
+    rows = (
+        ("Available", "", "Core public tutor", "Nine modes, device-held chat memory, essay and study workspaces, file extraction, account controls, and provider fallback."),
+        ("Available", "", "Public launch controls", "Optional ad placements, aggregate analytics, feedback intake, owner cost visibility, privacy documentation, and deployment health checks."),
+        ("Next", "next", "Reliability and safety", "Provider budgets, moderation review tools, stronger abuse controls, accessibility audits, and clearer service incident reporting."),
+        ("Next", "next", "Student workflow depth", "Assignment organisation, citations, richer exports, progress views, and curriculum-aware study support."),
+        ("Later", "later", "New interfaces", "Voice, richer visual input, teacher collaboration, and optional integrations after privacy and cost controls are proven."),
+    )
+    roadmap_rows = "".join(
+        f'<div class="roadmap-row"><span class="roadmap-status {css_class}">{status}</span>'
+        f'<div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div></div>'
+        for status, css_class, title, description in rows
+    )
+    return public_page_html(
+        "Roadmap",
+        "roadmap",
+        f"""
+        <header class="page-intro">
+            <span class="eyebrow">Version {html.escape(APP_VERSION)}</span>
+            <h1>Public roadmap</h1>
+            <p>Jarvis is being built as one dependable tutor first. New modes and integrations follow only when privacy, usefulness, reliability, and running cost are understood.</p>
+        </header>
+        <section class="page-section">
+            <div class="section-heading"><h2>Build direction</h2><p>Updated with public releases</p></div>
+            <div class="roadmap-list">{roadmap_rows}</div>
+        </section>
+        <section class="page-section">
+            <h2>Shape the order</h2>
+            <p>The roadmap is not a promise of dates. Real student feedback, safety issues, reliability, and operating cost decide what moves first.</p>
+            <a class="button" href="/feedback">Send feedback</a>
+        </section>
+        """,
+    )
+
+
+def _format_integer(value: Any) -> str:
+    return f"{_nonnegative_int(value):,}"
+
+
+def _format_cost(micros: Any) -> str:
+    return f"${_nonnegative_int(micros) / 1_000_000:,.4f}"
+
+
+def cost_dashboard_html(snapshot: dict[str, Any]) -> str:
+    usage = snapshot.get("usage", {})
+    events = snapshot.get("events", {})
+    daily_rows = "".join(
+        "<tr>"
+        f'<td>{html.escape(str(item.get("day", "")))}</td>'
+        f'<td class="number">{_format_integer(item.get("events", {}).get("chat_request", 0))}</td>'
+        f'<td class="number">{_format_integer(item.get("usage", {}).get("requests", 0))}</td>'
+        f'<td class="number">{_format_integer(item.get("usage", {}).get("input_tokens", 0))}</td>'
+        f'<td class="number">{_format_integer(item.get("usage", {}).get("output_tokens", 0))}</td>'
+        f'<td class="number">{_format_cost(item.get("usage", {}).get("estimated_cost_micros", 0))}</td>'
+        "</tr>"
+        for item in snapshot.get("daily", [])
+    ) or '<tr><td colspan="6" class="empty">No launch usage has been recorded yet.</td></tr>'
+    provider_rows = "".join(
+        "<tr>"
+        f'<td>{html.escape(str(item.get("provider", "")))}</td>'
+        f'<td>{html.escape(str(item.get("model", "")))}</td>'
+        f'<td class="number">{_format_integer(item.get("requests", 0))}</td>'
+        f'<td class="number">{_format_integer(item.get("errors", 0))}</td>'
+        f'<td class="number">{_format_integer(item.get("input_tokens", 0) + item.get("output_tokens", 0))}</td>'
+        f'<td class="number">{_format_cost(item.get("estimated_cost_micros", 0))}</td>'
+        "</tr>"
+        for item in snapshot.get("providers", [])
+    ) or '<tr><td colspan="6" class="empty">No provider attempts have been recorded yet.</td></tr>'
+    feedback_items = "".join(
+        '<article class="feedback-item">'
+        '<div class="feedback-meta">'
+        f'<strong>{html.escape(str(item.get("category", "general")).title())}</strong>'
+        f'<span>{html.escape(str(item.get("created_at", "")))}</span>'
+        + (
+            f'<span class="feedback-contact">{html.escape(str(item.get("contact", "")))}</span>'
+            if item.get("contact")
+            else ""
+        )
+        + "</div>"
+        f'<p>{html.escape(str(item.get("message", "")))}</p>'
+        "</article>"
+        for item in snapshot.get("feedback", [])
+    ) or '<p class="empty">No feedback has arrived yet.</p>'
+    pricing_notice = "" if pricing_configured() else (
+        '<p class="notice">Token counts are available, but provider prices are not configured. Add the per-million-token environment variables before treating the cost total as money spent.</p>'
+    )
+    return public_page_html(
+        "Launch metrics",
+        "",
+        f"""
+        <header class="page-intro">
+            <span class="eyebrow">Owner operations</span>
+            <h1>Launch metrics</h1>
+            <p>Thirty-day aggregate usage, estimated provider cost, reliability, and deliberately submitted feedback. No prompts or chat text are collected here.</p>
+        </header>
+        {pricing_notice}
+        <section class="page-section">
+            <div class="stats">
+                <div class="stat"><span>Chat requests</span><strong>{_format_integer(events.get("chat_request", 0))}</strong></div>
+                <div class="stat"><span>Provider attempts</span><strong>{_format_integer(usage.get("requests", 0))}</strong></div>
+                <div class="stat"><span>Total tokens</span><strong>{_format_integer(usage.get("input_tokens", 0) + usage.get("output_tokens", 0))}</strong></div>
+                <div class="stat"><span>Estimated cost</span><strong>{_format_cost(usage.get("estimated_cost_micros", 0))}</strong></div>
+            </div>
+        </section>
+        <section class="page-section">
+            <div class="section-heading"><h2>Daily usage</h2><p>UTC, last 30 days</p></div>
+            <div class="table-wrap"><table><thead><tr><th>Day</th><th class="number">Chats</th><th class="number">Attempts</th><th class="number">Input</th><th class="number">Output</th><th class="number">Cost</th></tr></thead><tbody>{daily_rows}</tbody></table></div>
+        </section>
+        <section class="page-section">
+            <div class="section-heading"><h2>Providers</h2><p>{_format_integer(usage.get("errors", 0))} failed attempts</p></div>
+            <div class="table-wrap"><table><thead><tr><th>Provider</th><th>Model</th><th class="number">Attempts</th><th class="number">Errors</th><th class="number">Tokens</th><th class="number">Cost</th></tr></thead><tbody>{provider_rows}</tbody></table></div>
+        </section>
+        <section class="page-section">
+            <div class="section-heading"><h2>Recent feedback</h2><p>Latest 50 submissions</p></div>
+            <div class="feedback-list">{feedback_items}</div>
+        </section>
+        """,
+    )
+
+
+@app.get("/feedback", response_class=HTMLResponse)
+def feedback_page() -> HTMLResponse:
+    record_public_event("feedback_open")
+    response = HTMLResponse(feedback_page_html())
+    response.headers["Content-Security-Policy"] = public_page_csp_header()
+    return response
+
+
+@app.get("/roadmap", response_class=HTMLResponse)
+def roadmap_page() -> HTMLResponse:
+    record_public_event("roadmap_open")
+    response = HTMLResponse(roadmap_page_html())
+    response.headers["Content-Security-Policy"] = public_page_csp_header()
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@app.get("/admin/costs", response_class=HTMLResponse)
+def cost_dashboard(request: Request) -> HTMLResponse:
+    if not is_admin_profile(current_user(request)):
+        return HTMLResponse("Not found.", status_code=404)
+    response = HTMLResponse(cost_dashboard_html(STORE.launch_snapshot(days=30, feedback_limit=50)))
+    response.headers["Content-Security-Policy"] = public_page_csp_header()
+    return response
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy() -> HTMLResponse:
+    record_public_event("privacy_open")
+    content = """
+        <header class="page-intro">
+            <span class="eyebrow">Public service</span>
+            <h1>Privacy</h1>
+            <p>Jarvis can be used anonymously. Optional Google sign-in lets the same account reopen its conversations on another device.</p>
+        </header>
+        <section class="page-section">
+            <h2>Chats and school work</h2>
+            <p>Main chat text, titles, essay drafts, rubric text, teacher feedback, study materials, subject profiles, and progress are stored in this browser when device memory is enabled. The server keeps lightweight conversation routing records and may keep Mini Jarvis chat text. Signed sessions contain the account identifier, name, and email returned by Google; Jarvis never sees the Google password.</p>
+        </section>
+        <section class="page-section">
+            <h2>AI providers</h2>
+            <p>When a user sends a message, requests a rubric check, or generates a study tool, the context needed for that result is sent to the configured AI provider. Do not submit passwords, payment details, medical records, or other highly sensitive information.</p>
+        </section>
+        <section class="page-section">
+            <h2>Aggregate analytics and cost</h2>
+            <p>Jarvis counts a small allowlist of product events and aggregates provider attempts, token counts, failures, model names, and estimated cost by UTC day. These launch metrics do not store prompts, responses, chat identifiers, account identifiers, or IP addresses and are retained for up to 120 days.</p>
+        </section>
+        <section class="page-section">
+            <h2>Feedback</h2>
+            <p>The feedback form stores the category, message, optional contact detail, and submission time for up to 365 days. Feedback is separate from chats. Leave contact blank to submit anonymously and do not include sensitive student records.</p>
+        </section>
+        <section class="page-section">
+            <h2>Ads</h2>
+            <p>Ads are disabled unless the site owner configures approved Google AdSense identifiers. When enabled, Google advertising scripts may use cookies or similar browser signals under Google's policies. Sponsored placements are labelled and kept outside the conversation message stream.</p>
+        </section>
+        <section class="page-section">
+            <h2>User controls</h2>
+            <p>The account page can export browser-held Jarvis data and remove conversation routing records owned by the current browser or signed-in account. Signing out clears the Google session cookie. The public service cannot open apps, read desktop files, or control a private computer.</p>
+        </section>
+    """
+    response = HTMLResponse(public_page_html("Privacy", "privacy", content))
+    response.headers["Content-Security-Policy"] = public_page_csp_header()
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
 
 
 def status_payload() -> dict[str, Any]:
@@ -3909,6 +4298,11 @@ def status_payload() -> dict[str, Any]:
         "storage_persistent": STORE.persistent,
         "memory_location": "device" if DEVICE_MEMORY_ENABLED else "server",
         "ads_configured": ads_enabled(),
+        "analytics_enabled": ANALYTICS_ENABLED,
+        "usage_metrics_enabled": USAGE_METRICS_ENABLED,
+        "feedback_enabled": True,
+        "admin_identity_configured": admin_identity_configured(),
+        "provider_pricing_configured": pricing_configured(),
         "google_login_configured": google_login_configured(),
         "stable_sessions": SESSION_SECRET_CONFIGURED,
         "device_control": False,
@@ -4015,6 +4409,7 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
         "sub": subject,
         "email": str(google_profile.get("email", "")).strip(),
         "name": str(google_profile.get("name", "")).strip(),
+        "email_verified": str(google_profile.get("email_verified", "")).strip().lower() == "true",
     }
     response = RedirectResponse(url="/", status_code=303)
     set_auth_cookie(response, request, profile)
@@ -4039,6 +4434,7 @@ def logout_post() -> RedirectResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> RedirectResponse:
+    record_public_event("session_start")
     device_id = device_id_from_request(request)
     chats = list_chats(device_id)
     chat_id = chats[-1][0] if chats else create_chat(device_id)
@@ -4051,6 +4447,7 @@ def home(request: Request) -> RedirectResponse:
 def new_chat(request: Request) -> RedirectResponse:
     device_id = device_id_from_request(request)
     chat_id = create_chat(device_id)
+    record_public_event("chat_created")
     response = RedirectResponse(url=f"/chat/{chat_id}", status_code=303)
     set_device_cookie(response, request, device_id)
     return response
@@ -4067,6 +4464,7 @@ def open_chat(chat_id: str, request: Request) -> HTMLResponse:
     chat_id = canonical_id(chat_id) or ""
     if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return HTMLResponse("This conversation is unavailable.", status_code=404)
+    record_public_event("chat_open")
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(page_html(chat_id, device_id, nonce, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
@@ -4080,6 +4478,7 @@ def open_essay_workspace(chat_id: str, request: Request) -> HTMLResponse:
     chat_id = canonical_id(chat_id) or ""
     if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return HTMLResponse("This essay workspace is unavailable.", status_code=404)
+    record_public_event("essay_open")
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(essay_workspace_html(chat_id, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
@@ -4093,6 +4492,7 @@ def open_study_workspace(chat_id: str, request: Request) -> HTMLResponse:
     chat_id = canonical_id(chat_id) or ""
     if not chat_id or not STORE.owns_chat(device_id, chat_id):
         return HTMLResponse("This study workspace is unavailable.", status_code=404)
+    record_public_event("study_open")
     nonce = secrets.token_urlsafe(18)
     response = HTMLResponse(study_workspace_html(chat_id, current_user(request)))
     response.headers["Content-Security-Policy"] = chat_csp_header(nonce)
@@ -4130,6 +4530,39 @@ def cloud_generate_stream(
         yield answer
 
 
+@app.post("/api/feedback")
+def api_feedback(payload: FeedbackRequest, request: Request) -> JSONResponse:
+    allowed, retry_after = FEEDBACK_RATE_LIMITER.allow(feedback_rate_key(request))
+    if not allowed:
+        response = JSONResponse(
+            {"detail": "Too many feedback submissions. Please try again later."},
+            status_code=429,
+        )
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+    if payload.company.strip():
+        return JSONResponse({"accepted": True})
+    message = clean_text(payload.message)
+    if len(message) < 3:
+        return JSONResponse({"detail": "Please add a little more detail."}, status_code=400)
+    contact = re.sub(r"[\x00-\x1f\x7f]+", " ", payload.contact).strip()[:240]
+    try:
+        feedback_id = STORE.save_feedback(
+            {
+                "id": str(uuid.uuid4()),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "category": payload.category,
+                "message": message,
+                "contact": contact,
+            }
+        )
+    except Exception as exc:
+        LOGGER.warning("Feedback write failed: %s", type(exc).__name__)
+        return JSONResponse({"detail": "Feedback storage is temporarily unavailable."}, status_code=503)
+    record_public_event("feedback_submit")
+    return JSONResponse({"accepted": True, "id": feedback_id}, status_code=201)
+
+
 @app.post("/api/chats/{chat_id}/attachments")
 async def api_extract_attachment(chat_id: str, request: Request, file: UploadFile = File(...)) -> JSONResponse:
     device_id = device_id_from_request(request)
@@ -4151,6 +4584,7 @@ async def api_extract_attachment(chat_id: str, request: Request, file: UploadFil
         name, media_type, text = extract_document(data, filename, media_type)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
+    record_public_event("attachment_extract")
     return JSONResponse({"name": name, "media_type": media_type, "text": text, "characters": len(text)})
 
 
@@ -4172,6 +4606,7 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
         attachment_prompt(text, context_attachments)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=413)
+    record_public_event("chat_request")
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     started = time.perf_counter()
@@ -4180,6 +4615,7 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
         messages.append(user_message_record(text, payload.mode, context_attachments))
         messages.append(assistant_message_record(answer, payload.mode))
         save_chat(chat_id, messages)
+    record_public_event("chat_response")
     return JSONResponse(
         {
             "answer": answer,
@@ -4208,6 +4644,7 @@ def api_chat_stream(chat_id: str, payload: ChatRequest, request: Request) -> Res
         prompt = attachment_prompt(text, context_attachments)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=413)
+    record_public_event("chat_request")
     messages = [] if DEVICE_MEMORY_ENABLED else load_chat(chat_id)
     model_history = normalized_client_history(payload.history) if DEVICE_MEMORY_ENABLED else messages
     if not DEVICE_MEMORY_ENABLED:
@@ -4228,6 +4665,7 @@ def api_chat_stream(chat_id: str, payload: ChatRequest, request: Request) -> Res
             if not DEVICE_MEMORY_ENABLED:
                 messages.append(assistant_message_record(answer, payload.mode))
                 save_chat(chat_id, messages)
+            record_public_event("chat_response")
             yield ndjson_event(
                 "done",
                 answer=answer,
@@ -4240,6 +4678,7 @@ def api_chat_stream(chat_id: str, payload: ChatRequest, request: Request) -> Res
             raise
         except Exception:
             LOGGER.exception("Streaming response failed")
+            record_public_event("chat_error")
             fallback = clean_text("".join(answer_parts)) or "Jarvis could not finish that response."
             if not DEVICE_MEMORY_ENABLED:
                 messages.append(assistant_message_record(fallback, payload.mode))
@@ -4282,6 +4721,7 @@ def api_pet_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRe
     text = clean_text(payload.message)
     if not text:
         return JSONResponse({"answer": "Say something to me first."})
+    record_public_event("pet_request")
     return JSONResponse({"answer": pet_reply(text, chat_id)})
 
 
@@ -4378,6 +4818,7 @@ def api_essay_self_check(chat_id: str, payload: EssaySelfCheckRequest, request: 
         return JSONResponse({"detail": str(exc)}, status_code=413)
     started = time.perf_counter()
     answer = call_jarvis_reply(prompt, chat_id, "essay", [], attachments)
+    record_public_event("essay_check")
     return JSONResponse(
         {
             "answer": answer,
@@ -4424,6 +4865,7 @@ def api_study_tools(chat_id: str, payload: StudyToolRequest, request: Request) -
         result = normalized_study_result(payload.action, parsed)
     except ValueError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=502)
+    record_public_event(f"study_{payload.action}")
     return JSONResponse(
         {
             "result": result,
