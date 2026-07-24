@@ -2462,7 +2462,17 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 var(--sidebar);
             border-color: var(--line);
             padding: 18px 10px 96px;
+            scrollbar-width: thin;
+            scrollbar-color: #24577a transparent;
         }}
+        .sidebar::-webkit-scrollbar {{ width: 8px; }}
+        .sidebar::-webkit-scrollbar-track {{ background: transparent; }}
+        .sidebar::-webkit-scrollbar-thumb {{
+            background: #24577a;
+            border: 2px solid #07111d;
+            border-radius: 4px;
+        }}
+        .sidebar::-webkit-scrollbar-thumb:hover {{ background: #3180a8; }}
         .brand-mark {{
             border-color: #2a82b7;
             background: #061827;
