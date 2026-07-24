@@ -2073,6 +2073,52 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             font-size: 11px;
             text-align: center;
         }}
+        .assignment-file-list {{
+            max-width: 860px;
+            margin: 8px auto 0;
+            display: grid;
+            gap: 6px;
+        }}
+        .assignment-file-item {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 10px;
+            border-radius: 9px;
+            border: 1px solid #333;
+            background: #171717;
+            font-size: 12px;
+            color: #d7d7d7;
+        }}
+        .assignment-file-item.error {{ border-color: #7a3030; background: #241414; color: #ffb4b4; }}
+        .assignment-file-name {{
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .assignment-file-size {{ color: #7f8f96; font-size: 11px; flex: 0 0 auto; }}
+        .assignment-file-progress-track {{
+            flex: 0 0 64px;
+            height: 4px;
+            border-radius: 3px;
+            background: #2c2c2c;
+            overflow: hidden;
+        }}
+        .assignment-file-progress-fill {{ height: 100%; width: 0%; background: #45f0ff; transition: width 120ms linear; }}
+        .assignment-file-remove {{
+            width: 22px;
+            height: 22px;
+            flex: 0 0 auto;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #8fa9b8;
+            cursor: pointer;
+        }}
+        .assignment-file-remove:hover {{ background: #3a1720; color: #ffd2d2; }}
+        .chat-form.drag-active {{ border-color: #45f0ff; box-shadow: 0 0 0 2px rgba(69, 240, 255, 0.25); }}
         .ad-slot {{
             display: grid;
             gap: 6px;
@@ -2924,11 +2970,12 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 </div>
                 <form class="chat-form" id="chat-form">
                     <button class="attach-button" id="assignment-attach" type="button" title="Remember rubric or notes" aria-label="Remember rubric or notes">+</button>
-                    <input id="assignment-file" type="file" accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
+                    <input id="assignment-file" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
                     <textarea id="message-input" name="message" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
                     <button class="send-button" id="send-button" type="submit">Send</button>
                 </form>
                 <div class="assignment-memory-status" id="assignment-memory-status" aria-live="polite"></div>
+                <div class="assignment-file-list" id="assignment-file-list"></div>
                 {suggestions}
                 {composer_ad}
                 <div class="hint">Enter sends. Shift+Enter adds a new line.</div>
@@ -3084,7 +3131,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             const name = String(item?.name || "assignment-notes.txt").replace(/[<>:"/\\\\|?*]/g, "_").slice(0, 160);
             const mediaType = String(item?.media_type || "text/plain").slice(0, 120);
             const text = String(item?.text || "").slice(0, {MAX_ATTACHMENT_CHARS});
-            return text.trim() ? {{ name, media_type: mediaType, text, saved_at: String(item?.saved_at || new Date().toISOString()) }} : null;
+            const bytes = Number.isFinite(item?.bytes) ? Math.max(0, Math.floor(item.bytes)) : 0;
+            return text.trim() ? {{ name, media_type: mediaType, text, bytes, saved_at: String(item?.saved_at || new Date().toISOString()) }} : null;
         }}
         function getAssignmentMemory(id = chatId) {{
             if (!deviceMemoryEnabled) return [];
@@ -3095,6 +3143,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             if (!deviceMemoryEnabled) return;
             writeJsonStorage(`jarvis_assignment_memory_${{id}}_v1`, items.map(cleanAssignmentMemoryItem).filter(Boolean).slice(-{MAX_ATTACHMENTS}));
             updateAssignmentMemoryStatus();
+            renderAssignmentFileList();
         }}
         function rememberAssignmentDocument(documentContext) {{
             const clean = cleanAssignmentMemoryItem({{ ...documentContext, saved_at: new Date().toISOString() }});
@@ -3104,6 +3153,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             saveAssignmentMemory(existing);
             rememberChatTitle(clean.name);
         }}
+        function removeAssignmentDocument(name) {{
+            const remaining = getAssignmentMemory().filter(item => item.name !== name);
+            saveAssignmentMemory(remaining);
+        }}
         function updateAssignmentMemoryStatus() {{
             if (!assignmentMemoryStatus) return;
             if (!deviceMemoryEnabled) {{
@@ -3112,33 +3165,134 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             }}
             const items = getAssignmentMemory();
             if (!items.length) {{
-                assignmentMemoryStatus.textContent = "Attach a rubric, notes, or draft once and Jarvis will remember it for this assignment.";
+                assignmentMemoryStatus.textContent = "Attach a rubric, notes, or draft once and Jarvis will remember it for this assignment. You can also drag files onto the composer.";
                 return;
             }}
-            const names = items.map(item => item.name).join(", ");
-            assignmentMemoryStatus.textContent = `Remembering ${{items.length}} assignment file${{items.length === 1 ? "" : "s"}}: ${{names}}`;
+            assignmentMemoryStatus.textContent = `Remembering ${{items.length}} of {MAX_ATTACHMENTS} assignment file${{items.length === 1 ? "" : "s"}}.`;
+        }}
+        function formatFileSize(bytes) {{
+            if (!bytes) return "";
+            if (bytes < 1024) return `${{bytes}} B`;
+            if (bytes < 1024 * 1024) return `${{(bytes / 1024).toFixed(1)}} KB`;
+            return `${{(bytes / (1024 * 1024)).toFixed(1)}} MB`;
+        }}
+        function renderAssignmentFileList() {{
+            const list = document.getElementById("assignment-file-list");
+            if (!list) return;
+            list.innerHTML = "";
+            if (!deviceMemoryEnabled) return;
+            getAssignmentMemory().forEach(item => {{
+                const row = document.createElement("div");
+                row.className = "assignment-file-item";
+                const name = document.createElement("span");
+                name.className = "assignment-file-name";
+                name.textContent = item.name;
+                name.title = item.name;
+                row.appendChild(name);
+                const size = formatFileSize(item.bytes);
+                if (size) {{
+                    const sizeLabel = document.createElement("span");
+                    sizeLabel.className = "assignment-file-size";
+                    sizeLabel.textContent = size;
+                    row.appendChild(sizeLabel);
+                }}
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "assignment-file-remove";
+                remove.title = `Remove ${{item.name}}`;
+                remove.setAttribute("aria-label", `Remove ${{item.name}}`);
+                remove.textContent = "×";
+                remove.addEventListener("click", () => removeAssignmentDocument(item.name));
+                row.appendChild(remove);
+                list.appendChild(row);
+            }});
+        }}
+        function createAssignmentProgressRow(file) {{
+            const list = document.getElementById("assignment-file-list");
+            if (!list) return null;
+            const row = document.createElement("div");
+            row.className = "assignment-file-item";
+            const name = document.createElement("span");
+            name.className = "assignment-file-name";
+            name.textContent = file.name;
+            name.title = file.name;
+            row.appendChild(name);
+            const track = document.createElement("span");
+            track.className = "assignment-file-progress-track";
+            const fill = document.createElement("span");
+            fill.className = "assignment-file-progress-fill";
+            track.appendChild(fill);
+            row.appendChild(track);
+            list.appendChild(row);
+            return {{
+                setProgress(fraction) {{
+                    fill.style.width = `${{Math.min(100, Math.max(0, fraction * 100))}}%`;
+                }},
+                setError(message) {{
+                    row.classList.add("error");
+                    track.remove();
+                    const errorLabel = document.createElement("span");
+                    errorLabel.className = "assignment-file-size";
+                    errorLabel.textContent = message;
+                    row.appendChild(errorLabel);
+                    row.title = "Click to dismiss";
+                    row.addEventListener("click", () => row.remove());
+                }},
+                remove() {{ row.remove(); }}
+            }};
+        }}
+        function uploadAssignmentFileWithProgress(file, progressRow) {{
+            return new Promise((resolve, reject) => {{
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", `/api/chats/${{chatId}}/attachments`);
+                xhr.upload.onprogress = event => {{
+                    if (event.lengthComputable && progressRow) progressRow.setProgress(event.loaded / event.total);
+                }};
+                xhr.onload = () => {{
+                    let data = {{}};
+                    try {{ data = JSON.parse(xhr.responseText || "{{}}"); }} catch (error) {{}}
+                    if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+                    else reject(new Error(data.detail || "Jarvis could not read that file."));
+                }};
+                xhr.onerror = () => reject(new Error("That file could not be uploaded."));
+                const formData = new FormData();
+                formData.append("file", file);
+                xhr.send(formData);
+            }});
+        }}
+        async function handleAssignmentFiles(fileList) {{
+            const files = Array.from(fileList || []);
+            if (!files.length) return;
+            const remainingSlots = Math.max(0, {MAX_ATTACHMENTS} - getAssignmentMemory().length);
+            const queued = files.slice(0, remainingSlots || files.length);
+            if (files.length > queued.length && assignmentMemoryStatus) {{
+                assignmentMemoryStatus.textContent = `Jarvis can remember up to {MAX_ATTACHMENTS} files per assignment; only the first ${{queued.length}} were queued.`;
+            }}
+            if (assignmentAttach) assignmentAttach.disabled = true;
+            for (const file of queued) {{
+                const progressRow = createAssignmentProgressRow(file);
+                if (file.size > {MAX_UPLOAD_BYTES}) {{
+                    progressRow?.setError("Larger than the upload limit.");
+                    continue;
+                }}
+                try {{
+                    const data = await uploadAssignmentFileWithProgress(file, progressRow);
+                    rememberAssignmentDocument({{ ...data, bytes: file.size }});
+                    addMessage("Jarvis", `I will remember ${{data.name}} for this assignment.`);
+                    progressRow?.remove();
+                }} catch (error) {{
+                    progressRow?.setError(error.message || "Could not be added.");
+                }}
+            }}
+            if (assignmentAttach) assignmentAttach.disabled = false;
+            updateAssignmentMemoryStatus();
+            input.focus();
         }}
         async function uploadAssignmentMemoryFile() {{
             if (!assignmentFile?.files?.length) return;
-            const file = assignmentFile.files[0];
-            if (assignmentAttach) assignmentAttach.disabled = true;
-            if (assignmentMemoryStatus) assignmentMemoryStatus.textContent = `Reading ${{file.name}}...`;
-            try {{
-                const formData = new FormData();
-                formData.append("file", file);
-                const response = await fetch(`/api/chats/${{chatId}}/attachments`, {{ method: "POST", body: formData }});
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || "Jarvis could not read that file.");
-                rememberAssignmentDocument(data);
-                addMessage("Jarvis", `I will remember ${{data.name}} for this assignment.`);
-            }} catch (error) {{
-                if (assignmentMemoryStatus) assignmentMemoryStatus.textContent = error.message || "That file could not be added.";
-            }} finally {{
-                assignmentFile.value = "";
-                if (assignmentAttach) assignmentAttach.disabled = false;
-                updateAssignmentMemoryStatus();
-                input.focus();
-            }}
+            const files = assignmentFile.files;
+            assignmentFile.value = "";
+            await handleAssignmentFiles(files);
         }}
         function rememberMessage(role, content, mode = activeMode) {{
             const items = getChatMemory();
@@ -3635,6 +3789,30 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         if (exportDeviceData) exportDeviceData.addEventListener("click", exportLocalMemory);
         if (assignmentAttach && assignmentFile) assignmentAttach.addEventListener("click", () => assignmentFile.click());
         if (assignmentFile) assignmentFile.addEventListener("change", uploadAssignmentMemoryFile);
+        if (form) {{
+            let dragDepth = 0;
+            form.addEventListener("dragenter", event => {{
+                if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+                event.preventDefault();
+                dragDepth += 1;
+                form.classList.add("drag-active");
+            }});
+            form.addEventListener("dragover", event => {{
+                if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+                event.preventDefault();
+            }});
+            form.addEventListener("dragleave", () => {{
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (dragDepth === 0) form.classList.remove("drag-active");
+            }});
+            form.addEventListener("drop", event => {{
+                if (!event.dataTransfer?.files?.length) return;
+                event.preventDefault();
+                dragDepth = 0;
+                form.classList.remove("drag-active");
+                handleAssignmentFiles(event.dataTransfer.files);
+            }});
+        }}
         document.querySelectorAll('form[action="/new"]').forEach(newChatForm => newChatForm.addEventListener("submit", event => {{
             event.preventDefault();
             closeMobileNav();
@@ -3763,6 +3941,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         updateActivityDashboard();
         updateEngineeringDashboard();
         updateAssignmentMemoryStatus();
+        renderAssignmentFileList();
         setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
         renderLocalChatMemory();
         startEngineeringPreview();
