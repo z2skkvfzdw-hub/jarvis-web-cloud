@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from xml.etree import ElementTree
 
 import bleach
@@ -914,24 +914,85 @@ def pet_reply(user_text: str, chat_id: str) -> str:
     return answer
 
 
-def ddgs_text_search(query: str) -> str:
+def ddgs_text_results(query: str) -> list[dict[str, str]]:
     if DDGS is None:
-        return "Search is not available because the ddgs package is missing."
+        return []
     try:
-        results: list[str] = []
+        results: list[dict[str, str]] = []
         with DDGS() as ddgs:
             for item in ddgs.text(query, region="wt-wt", safesearch="moderate", max_results=5):
                 title = clean_text(item.get("title", ""))
                 body = clean_text(item.get("body", ""))
                 href = clean_text(item.get("href", ""))
-                line = f"{title}. {body}".strip(". ")
-                if line:
-                    results.append(f"- {line}\n  Source: {href}")
-        if not results:
-            return "No search results found."
-        return "Search results:\n" + "\n".join(results[:5])
-    except Exception as exc:
-        return f"Search failed: {exc}"
+                if href:
+                    results.append({"title": title or href, "body": body, "url": href})
+        return results
+    except Exception:
+        return []
+
+
+def format_search_results(results: list[dict[str, str]]) -> str:
+    if not results:
+        return "No search results found."
+    lines = []
+    for index, item in enumerate(results[:5], start=1):
+        line = f"{item['title']}. {item['body']}".strip(". ")
+        lines.append(f"[{index}] {line}\n  Source: {item['url']}")
+    return "Search results:\n" + "\n".join(lines)
+
+
+def ddgs_text_search(query: str) -> str:
+    if DDGS is None:
+        return "Search is not available because the ddgs package is missing."
+    return format_search_results(ddgs_text_results(query))
+
+
+RELIABLE_SOURCE_HINTS = (
+    ".gov",
+    ".edu",
+    "wikipedia.org",
+    "who.int",
+    "un.org",
+    "nature.com",
+    "sciencedirect.com",
+    "reuters.com",
+    "apnews.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "nih.gov",
+    "ncbi.nlm.nih.gov",
+    "nasa.gov",
+    "jstor.org",
+    "britannica.com",
+)
+
+
+def source_reliability(url: str) -> str:
+    lowered = url.lower()
+    return "established" if any(hint in lowered for hint in RELIABLE_SOURCE_HINTS) else "general"
+
+
+def build_citation_sources(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    sources = []
+    for item in results[:8]:
+        url = str(item.get("url", "")).strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        sources.append(
+            {
+                "title": item.get("title") or url,
+                "url": url,
+                "domain": urlsplit(url).netloc.removeprefix("www."),
+                "reliability": source_reliability(url),
+            }
+        )
+    return sources
+
+
+def citation_payload(sources: list[dict[str, str]]) -> str:
+    data = json.dumps({"sources": sources[:8]}, ensure_ascii=False).encode("utf-8")
+    token = base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+    return f"[[JARVIS_CITATIONS:{token}]]"
 
 
 def image_gallery_payload(query: str, images: list[dict[str, str]]) -> str:
@@ -1464,16 +1525,23 @@ def jarvis_reply(
         )
 
     if mode == "research":
-        search_results = ddgs_text_search(text)
-        if "No search results found" not in search_results and "Search failed" not in search_results:
+        results = ddgs_text_results(text)
+        if results:
+            search_results = format_search_results(results)
             reply = cloud_generate(
-                "Answer the research question using the supplied web results. Include the most useful source URLs and "
-                "say when a conclusion is an inference.\n\n"
+                "Answer the research question using the supplied numbered web results. Cite sources inline with "
+                "bracketed numbers like [1] that match the numbered list below, placing a source's number the "
+                "first time you use its information, and say when a conclusion is an inference rather than a "
+                "sourced fact.\n\n"
                 f"Research question: {text}\n\nWeb results:\n{search_results}",
                 history,
                 mode="research",
             )
-            return reply or search_results
+            answer = reply or search_results
+            sources = build_citation_sources(results)
+            if sources:
+                answer = f"{answer}\n\n{citation_payload(sources)}"
+            return answer
 
     if mode == "engineer":
         reply = cloud_generate(model_text, history, mode="engineer")
@@ -1487,7 +1555,8 @@ def jarvis_reply(
 
 
 def render_content(content: str) -> str:
-    visible = re.sub(r"\[\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\-=]+\]\]", "", content).strip()
+    visible = re.sub(r"\[\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\-=]+\]\]", "", content)
+    visible = re.sub(r"\[\[JARVIS_CITATIONS:[A-Za-z0-9_\-=]+\]\]", "", visible).strip()
     rendered = markdown.markdown(
         visible,
         extensions=["fenced_code", "tables", "sane_lists"],
@@ -1505,7 +1574,8 @@ def render_content(content: str) -> str:
     )
     rendered = rendered.replace('<a href="', '<a target="_blank" rel="noopener noreferrer" href="')
     gallery = render_gallery(content)
-    return rendered + gallery
+    citations = render_citations(content)
+    return rendered + gallery + citations
 
 
 def render_gallery(content: str) -> str:
@@ -1533,6 +1603,41 @@ def render_gallery(content: str) -> str:
                 )
         if cards:
             output += '<section class="image-gallery">' + "".join(cards) + "</section>"
+    return output
+
+
+def render_citations(content: str) -> str:
+    output = ""
+    for match in re.finditer(r"\[\[JARVIS_CITATIONS:([A-Za-z0-9_\-=]+)\]\]", content):
+        token = match.group(1)
+        try:
+            padded = token + "=" * ((4 - len(token) % 4) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        except Exception:
+            continue
+        items = []
+        for index, source in enumerate(payload.get("sources", [])[:8], start=1):
+            url = str(source.get("url", ""))
+            if not url.startswith(("http://", "https://")):
+                continue
+            safe_url = html.escape(url, quote=True)
+            title = html.escape(str(source.get("title") or url))
+            domain = html.escape(str(source.get("domain") or ""))
+            established = str(source.get("reliability")) == "established"
+            badge_class = "citation-badge established" if established else "citation-badge general"
+            badge_label = "Established source" if established else "General source"
+            items.append(
+                f'<li class="citation-item">'
+                f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">[{index}] {title}</a>'
+                f'<span class="{badge_class}">{badge_label}</span>'
+                f'<span class="citation-domain">{domain}</span>'
+                "</li>"
+            )
+        if items:
+            output += (
+                '<section class="citations"><p class="citations-heading">Sources</p>'
+                '<ol class="citation-list">' + "".join(items) + "</ol></section>"
+            )
     return output
 
 
@@ -2242,6 +2347,42 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         }}
         .image-result-title, .image-result-source {{ display: block; padding: 8px 9px 0; font-size: 12px; line-height: 1.3; }}
         .image-result-source {{ padding: 0 9px 9px; color: #a7a7a7; font-size: 11px; }}
+        .citations {{ margin-top: 14px; max-width: 100%; }}
+        .citations-heading {{
+            margin: 0 0 6px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #8fa9b8;
+        }}
+        .citation-list {{ display: grid; gap: 6px; margin: 0; padding-left: 0; list-style: none; }}
+        .citation-item {{
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border: 1px solid #303030;
+            border-radius: 10px;
+            background: #171717;
+            font-size: 12px;
+        }}
+        .citation-item a {{ color: #7cc4ff; text-decoration: none; overflow-wrap: anywhere; }}
+        .citation-item a:hover {{ text-decoration: underline; }}
+        .citation-domain {{ color: #7f8f96; font-size: 11px; margin-left: auto; }}
+        .citation-badge {{
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            padding: 2px 7px;
+            border-radius: 999px;
+            border: 1px solid #384850;
+            color: #a7bcc6;
+            flex: 0 0 auto;
+        }}
+        .citation-badge.established {{ color: #9cff72; border-color: #2f6d2a; }}
         @media (max-width: 900px) {{
             .sidebar {{ display: none; }}
             .topbar {{ height: 48px; padding: 0 14px; }}
@@ -3680,7 +3821,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             return output;
         }}
         function renderContent(content) {{
-            const visible = content.replace(/\\[\\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\\-=]+\\]\\]/g, "").trim();
+            const visible = content
+                .replace(/\\[\\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\\-=]+\\]\\]/g, "")
+                .replace(/\\[\\[JARVIS_CITATIONS:[A-Za-z0-9_\\-=]+\\]\\]/g, "")
+                .trim();
             return escapeHtml(visible) + imageGalleryHtml(content);
         }}
         let lastAssistantArticle = null;
