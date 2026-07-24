@@ -89,6 +89,9 @@ current browser without being required to create an account.
   token counts, estimated cost, and recent feedback only to a signed-in Google
   identity listed in `JARVIS_ADMIN_EMAILS` or `JARVIS_ADMIN_SUBJECTS`.
 
+Email allowlisting is accepted only when Google marks the email as verified.
+The Google subject id is the more stable owner identifier when it is available.
+
 Analytics are first-party aggregate counters. They never store prompts,
 responses, chat ids, account ids, or IP addresses and are retained for up to
 120 days. Feedback is retained for up to 365 days. Set
