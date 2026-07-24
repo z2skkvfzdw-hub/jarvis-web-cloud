@@ -1560,9 +1560,18 @@ def build_sidebar(current_chat_id: str, device_id: str) -> str:
         active = " active" if chat_id == current_chat_id else ""
         safe_title = html.escape(title)
         rows.append(
-            f'<div class="chat-row{active}" data-chat-row data-title="{safe_title.casefold()}">'
+            f'<div class="chat-row{active}" data-chat-row data-chat-id="{chat_id}" data-title="{safe_title.casefold()}" '
+            'data-pinned="false" data-archived="false">'
             f'<a class="chat-title" href="/chat/{chat_id}" title="{safe_title}">{safe_title}</a>'
+            '<div class="chat-row-actions">'
+            f'<button class="chat-action" type="button" data-pin-chat="{chat_id}" title="Pin chat" '
+            'aria-label="Pin chat" aria-pressed="false"><span data-lucide="pin"></span></button>'
+            f'<button class="chat-action" type="button" data-rename-chat="{chat_id}" title="Rename chat" '
+            'aria-label="Rename chat"><span data-lucide="pencil"></span></button>'
+            f'<button class="chat-action" type="button" data-archive-chat="{chat_id}" title="Archive chat" '
+            'aria-label="Archive chat" aria-pressed="false"><span data-lucide="archive"></span></button>'
             f'<button class="chat-delete" type="button" data-delete-chat="{chat_id}" title="Delete chat" aria-label="Delete chat">&times;</button>'
+            "</div>"
             "</div>"
         )
     return "\n".join(rows)
@@ -1882,7 +1891,21 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             color: #d8d8d8;
             font-size: 13px;
             font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
         }}
+        .recents-header .text-button {{
+            font-size: 11px;
+            font-weight: 600;
+            color: #8fa9b8;
+            background: transparent;
+            border: 0;
+            cursor: pointer;
+            padding: 2px 4px;
+        }}
+        .recents-header .text-button:hover {{ color: #eef8ff; }}
         .chat-row {{
             min-height: 38px;
             display: flex;
@@ -1892,6 +1915,26 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             margin: 1px 0;
         }}
         .chat-row.active {{ background: #1f1f1f; }}
+        .chat-row[data-pinned="true"] {{ background: #161616; }}
+        .chat-row-actions {{ display: flex; align-items: center; gap: 1px; flex: 0 0 auto; }}
+        .chat-action {{
+            width: 26px;
+            height: 26px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #8fa9b8;
+            cursor: pointer;
+            opacity: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .chat-action svg {{ width: 14px; height: 14px; }}
+        .chat-row:hover .chat-action, .chat-action:focus-visible {{ opacity: 1; }}
+        .chat-action:hover {{ background: #202020; color: #eef8ff; }}
+        .chat-action[aria-pressed="true"] {{ opacity: 1; color: #45f0ff; }}
+        .chat-list:not(.show-archived) .chat-row[data-archived="true"] {{ display: none; }}
         .chat-title {{
             display: block;
             flex: 1;
@@ -2777,8 +2820,43 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             transition: opacity 160ms ease, transform 160ms ease;
         }}
         .jarvis-one-toast.show {{ opacity: 1; transform: translate(-50%, 0); }}
+        .chat-toast {{
+            position: fixed;
+            left: 50%;
+            bottom: 92px;
+            z-index: 1400;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            width: max-content;
+            max-width: min(420px, calc(100vw - 28px));
+            padding: 12px 14px;
+            border: 1px solid #2a789a;
+            border-radius: 8px;
+            background: #071827;
+            color: #f4fbff;
+            box-shadow: 0 18px 54px rgba(0, 0, 0, 0.48), 0 0 24px rgba(69, 240, 255, 0.12);
+            font-size: 13px;
+            transform: translate(-50%, 18px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 160ms ease, transform 160ms ease;
+        }}
+        .chat-toast.show {{ opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }}
+        .chat-toast-action {{
+            flex: 0 0 auto;
+            border: 1px solid #2a789a;
+            border-radius: 6px;
+            background: transparent;
+            color: #45f0ff;
+            font-weight: 700;
+            font-size: 12px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }}
+        .chat-toast-action:hover {{ background: #0e2d3f; }}
         @media (max-width:1240px) {{ .pet-panel {{ right: 16px; }} }}
-        @media (max-width:760px) {{ .pet-toggle {{ width: 34px; height: 34px; flex-basis: 34px; }} .pet-panel {{ top: 58px; right: 10px; left: 10px; width: auto; height: min(520px, calc(100vh - 76px)); }} .jarvis-one-toast {{ bottom: 76px; font-size: 13px; }} }}
+        @media (max-width:760px) {{ .pet-toggle {{ width: 34px; height: 34px; flex-basis: 34px; }} .pet-panel {{ top: 58px; right: 10px; left: 10px; width: auto; height: min(520px, calc(100vh - 76px)); }} .jarvis-one-toast {{ bottom: 76px; font-size: 13px; }} .chat-toast {{ bottom: 76px; font-size: 12px; }} }}
     </style>
 </head>
 <body class="guest-version">
@@ -2805,8 +2883,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 <span class="sr-only">Search recent chats</span>
                 <input id="chat-search" type="search" placeholder="Search recent chats" autocomplete="off">
             </label>
-            <div class="recents-header"><span>Recents</span></div>
+            <div class="recents-header"><span>Recents</span><button class="text-button" id="toggle-archived-chats" type="button" hidden>Show archived</button></div>
+            <div class="chat-list" id="chat-list">
             {sidebar}
+            </div>
             {sidebar_ad}
         </aside>
         <button class="mobile-nav-backdrop" id="mobile-nav-backdrop" type="button" aria-label="Close chat navigation"></button>
@@ -3077,21 +3157,69 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         function saveChatIndex(index) {{
             if (deviceMemoryEnabled) writeJsonStorage(chatIndexKey, index.slice(-80));
         }}
+        function chatIndexItem(id) {{
+            return getChatIndex().find(item => item.id === id) || null;
+        }}
+        function updateChatIndexItem(id, patch) {{
+            if (!deviceMemoryEnabled) return null;
+            const index = getChatIndex();
+            const existing = index.find(item => item.id === id);
+            const updated = Object.assign({{ id, title: existing?.title || "New Chat", updatedAt: Date.now() }}, existing || {{}}, patch, {{ id, updatedAt: Date.now() }});
+            const next = index.filter(item => item.id !== id);
+            next.push(updated);
+            saveChatIndex(next);
+            return updated;
+        }}
+        function applyRowState(row, item) {{
+            if (!row || !item) return;
+            const link = row.querySelector(".chat-title");
+            if (link && item.title) {{
+                link.textContent = item.title;
+                link.title = item.title;
+                row.dataset.title = item.title.toLowerCase();
+            }}
+            row.dataset.pinned = item.pinned ? "true" : "false";
+            row.dataset.archived = item.archived ? "true" : "false";
+            const pinBtn = row.querySelector("[data-pin-chat]");
+            if (pinBtn) pinBtn.setAttribute("aria-pressed", item.pinned ? "true" : "false");
+            const archiveBtn = row.querySelector("[data-archive-chat]");
+            if (archiveBtn) archiveBtn.setAttribute("aria-pressed", item.archived ? "true" : "false");
+        }}
+        function reorderChatRows() {{
+            const list = document.getElementById("chat-list");
+            if (!list) return;
+            const rows = Array.from(list.querySelectorAll("[data-chat-row]"));
+            if (!rows.length) return;
+            const pinned = rows.filter(row => row.dataset.pinned === "true" && row.dataset.archived !== "true");
+            const normal = rows.filter(row => row.dataset.pinned !== "true" && row.dataset.archived !== "true");
+            const archived = rows.filter(row => row.dataset.archived === "true");
+            [...pinned, ...normal, ...archived].forEach(row => list.appendChild(row));
+            const toggle = document.getElementById("toggle-archived-chats");
+            if (toggle) {{
+                toggle.hidden = archived.length === 0;
+                toggle.textContent = list.classList.contains("show-archived")
+                    ? "Hide archived"
+                    : `Show archived (${{archived.length}})`;
+            }}
+        }}
+        function hydrateSidebar() {{
+            if (!deviceMemoryEnabled) return;
+            document.querySelectorAll("[data-chat-row]").forEach(row => {{
+                const id = row.dataset.chatId;
+                const item = id ? chatIndexItem(id) : null;
+                if (item) applyRowState(row, item);
+            }});
+            reorderChatRows();
+        }}
         function rememberChatTitle(seedText = "") {{
             if (!deviceMemoryEnabled) return;
             const items = getChatMemory();
-            const title = firstUserLine(items) || String(seedText || "New Chat").slice(0, 48);
-            const index = getChatIndex().filter(item => item.id !== chatId);
-            index.push({{ id: chatId, title, updatedAt: Date.now() }});
-            saveChatIndex(index);
-            document.querySelectorAll(`[data-chat-row]`).forEach(row => {{
-                const link = row.querySelector(`[href="/chat/${{chatId}}"]`);
-                if (link) {{
-                    link.textContent = title;
-                    link.title = title;
-                    row.dataset.title = title.toLowerCase();
-                }}
-            }});
+            const existing = chatIndexItem(chatId);
+            const autoTitle = firstUserLine(items) || String(seedText || "New Chat").slice(0, 48);
+            const title = existing?.renamed ? existing.title : autoTitle;
+            const updated = updateChatIndexItem(chatId, {{ title }});
+            const row = document.querySelector(`[data-chat-row][data-chat-id="${{chatId}}"]`);
+            applyRowState(row, updated);
         }}
         function renderLocalChatMemory() {{
             if (!deviceMemoryEnabled || messages.querySelector(".message")) return;
@@ -3396,24 +3524,114 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 row.hidden = Boolean(query) && !String(row.dataset.title || "").includes(query);
             }});
         }});
-        document.querySelectorAll("[data-delete-chat]").forEach(item => item.addEventListener("click", async event => {{
+        function showChatToast(message, actionLabel, onAction) {{
+            let toast = document.getElementById("chat-toast");
+            if (!toast) {{
+                toast = document.createElement("div");
+                toast.id = "chat-toast";
+                toast.className = "chat-toast";
+                toast.setAttribute("role", "status");
+                toast.setAttribute("aria-live", "polite");
+                document.body.appendChild(toast);
+            }}
+            toast.innerHTML = "";
+            const text = document.createElement("span");
+            text.textContent = message;
+            toast.appendChild(text);
+            if (actionLabel && onAction) {{
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "chat-toast-action";
+                button.textContent = actionLabel;
+                button.addEventListener("click", () => {{ onAction(); hideChatToast(); }});
+                toast.appendChild(button);
+            }}
+            toast.classList.add("show");
+            clearTimeout(toast._hideTimer);
+            toast._hideTimer = window.setTimeout(hideChatToast, 6400);
+        }}
+        function hideChatToast() {{
+            const toast = document.getElementById("chat-toast");
+            if (toast) toast.classList.remove("show");
+        }}
+        document.querySelectorAll("[data-delete-chat]").forEach(item => item.addEventListener("click", event => {{
             event.preventDefault();
             const targetId = item.dataset.deleteChat;
             if (!targetId || !window.confirm("Delete this conversation permanently?")) return;
-            if (deviceMemoryEnabled) {{
-                try {{
-                    localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
-                    localStorage.removeItem(`jarvis_assignment_memory_${{targetId}}_v1`);
-                    localStorage.removeItem(`jarvis_essay_workspace_${{targetId}}_v1`);
-                    localStorage.removeItem(`jarvis_study_workspace_${{targetId}}_v1`);
-                    saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
-                }} catch (error) {{}}
-            }}
-            const response = await fetch(`/api/chats/${{targetId}}`, {{ method: "DELETE" }});
-            if (!response.ok) {{ window.alert("That conversation could not be deleted."); return; }}
-            if (targetId === chatId) window.location.assign("/");
-            else item.closest("[data-chat-row]")?.remove();
+            const row = item.closest("[data-chat-row]");
+            const parent = row ? row.parentElement : null;
+            const nextSibling = row ? row.nextSibling : null;
+            if (row) row.hidden = true;
+            let undone = false;
+            const finalizeDelete = async () => {{
+                if (undone) return;
+                if (deviceMemoryEnabled) {{
+                    try {{
+                        localStorage.removeItem(`jarvis_chat_memory_${{targetId}}_v1`);
+                        localStorage.removeItem(`jarvis_assignment_memory_${{targetId}}_v1`);
+                        localStorage.removeItem(`jarvis_essay_workspace_${{targetId}}_v1`);
+                        localStorage.removeItem(`jarvis_study_workspace_${{targetId}}_v1`);
+                        saveChatIndex(getChatIndex().filter(chat => chat.id !== targetId));
+                    }} catch (error) {{}}
+                }}
+                const response = await fetch(`/api/chats/${{targetId}}`, {{ method: "DELETE" }});
+                if (!response.ok && response.status !== 404) {{
+                    window.alert("That conversation could not be deleted.");
+                    if (row) row.hidden = false;
+                    return;
+                }}
+                if (row) row.remove();
+                if (targetId === chatId) window.location.assign("/");
+            }};
+            const timer = window.setTimeout(finalizeDelete, 6000);
+            showChatToast("Conversation deleted.", "Undo", () => {{
+                undone = true;
+                window.clearTimeout(timer);
+                if (row) {{
+                    row.hidden = false;
+                    if (parent && !parent.contains(row)) parent.insertBefore(row, nextSibling);
+                }}
+                reorderChatRows();
+            }});
         }}));
+        document.querySelectorAll("[data-pin-chat]").forEach(item => item.addEventListener("click", event => {{
+            event.preventDefault();
+            const targetId = item.dataset.pinChat;
+            if (!targetId) return;
+            const existing = chatIndexItem(targetId);
+            const updated = updateChatIndexItem(targetId, {{ pinned: !(existing && existing.pinned) }});
+            applyRowState(item.closest("[data-chat-row]"), updated);
+            reorderChatRows();
+        }}));
+        document.querySelectorAll("[data-archive-chat]").forEach(item => item.addEventListener("click", event => {{
+            event.preventDefault();
+            const targetId = item.dataset.archiveChat;
+            if (!targetId) return;
+            const existing = chatIndexItem(targetId);
+            const updated = updateChatIndexItem(targetId, {{ archived: !(existing && existing.archived) }});
+            applyRowState(item.closest("[data-chat-row]"), updated);
+            reorderChatRows();
+        }}));
+        document.querySelectorAll("[data-rename-chat]").forEach(item => item.addEventListener("click", event => {{
+            event.preventDefault();
+            const targetId = item.dataset.renameChat;
+            if (!targetId) return;
+            const row = item.closest("[data-chat-row]");
+            const current = chatIndexItem(targetId)?.title || row?.querySelector(".chat-title")?.textContent.trim() || "New Chat";
+            const nextTitle = window.prompt("Rename this conversation", current);
+            if (nextTitle === null) return;
+            const trimmed = nextTitle.trim().slice(0, 48);
+            if (!trimmed) return;
+            const updated = updateChatIndexItem(targetId, {{ title: trimmed, renamed: true }});
+            applyRowState(row, updated);
+        }}));
+        const toggleArchivedChats = document.getElementById("toggle-archived-chats");
+        if (toggleArchivedChats) toggleArchivedChats.addEventListener("click", () => {{
+            const list = document.getElementById("chat-list");
+            if (!list) return;
+            list.classList.toggle("show-archived");
+            reorderChatRows();
+        }});
         if (exportDeviceData) exportDeviceData.addEventListener("click", exportLocalMemory);
         if (assignmentAttach && assignmentFile) assignmentAttach.addEventListener("click", () => assignmentFile.click());
         if (assignmentFile) assignmentFile.addEventListener("change", uploadAssignmentMemoryFile);
@@ -3481,6 +3699,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         if (workspaceClose) workspaceClose.addEventListener("click", () => document.body.classList.add("workspace-collapsed"));
         if (workspaceOpen) workspaceOpen.addEventListener("click", () => document.body.classList.remove("workspace-collapsed"));
         if (window.lucide) lucide.createIcons();
+        hydrateSidebar();
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text) return;
