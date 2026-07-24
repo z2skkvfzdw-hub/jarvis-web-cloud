@@ -2046,6 +2046,26 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             cursor: pointer;
             flex: 0 0 auto;
         }}
+        .send-button.stop-generating-button {{ background: #4a1414; color: #ffb4b4; }}
+        .message-body {{ display: flex; flex-direction: column; min-width: 0; max-width: min(82%, 760px); }}
+        .message.user .message-body {{ align-items: flex-end; max-width: min(74%, 720px); }}
+        .message-body .bubble {{ max-width: 100%; }}
+        .message-actions {{ display: flex; gap: 2px; margin-top: 2px; }}
+        .message-action {{
+            width: 26px;
+            height: 26px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #8fa9b8;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .message-action svg {{ width: 14px; height: 14px; }}
+        .message-action:hover {{ background: #202020; color: #eef8ff; }}
+        .message-action.copied {{ color: #9cff72; }}
         .suggestions {{
             max-width: 860px;
             margin: 18px auto 0;
@@ -2423,6 +2443,8 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         .attach-button:hover {{ background: #0b2033; border-color: #43d9ff; color: #effbff; }}
         .send-button {{ width: 42px; height: 42px; border-radius: 6px; background: var(--accent); color: #031011; font-size: 0; }}
         .send-button::before {{ content: "\\2191"; color: #031011; font-size: 23px; line-height: 1; }}
+        .send-button.stop-generating-button {{ background: #4a1414; }}
+        .send-button.stop-generating-button::before {{ content: "\\25A0"; color: #ffb4b4; font-size: 16px; }}
         .composer-suggestions {{ max-width: 860px; }}
         .suggestion {{
             height: 42px;
@@ -2973,6 +2995,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                     <input id="assignment-file" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.pdf,.docx,.pptx,.py,.js,.html,.css" hidden>
                     <textarea id="message-input" name="message" maxlength="{MAX_MESSAGE_CHARS}" placeholder="Message Jarvis..." autocomplete="off" autofocus></textarea>
                     <button class="send-button" id="send-button" type="submit">Send</button>
+                    <button class="send-button stop-generating-button" id="stop-button" type="button" hidden title="Stop generating" aria-label="Stop generating">Stop</button>
                 </form>
                 <div class="assignment-memory-status" id="assignment-memory-status" aria-live="polite"></div>
                 <div class="assignment-file-list" id="assignment-file-list"></div>
@@ -3000,6 +3023,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         const form = document.getElementById("chat-form");
         const input = document.getElementById("message-input");
         const button = document.getElementById("send-button");
+        const stopButton = document.getElementById("stop-button");
         const emptyState = document.getElementById("empty-state");
         const suggestions = document.getElementById("composer-suggestions");
         const initialMode = {json.dumps(active_mode)};
@@ -3378,7 +3402,13 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         function renderLocalChatMemory() {{
             if (!deviceMemoryEnabled || messages.querySelector(".message")) return;
             const items = getChatMemory();
-            items.forEach(item => addMessage(item.role === "user" ? "user" : "Jarvis", item.content));
+            items.forEach(item => {{
+                const article = addMessage(item.role === "user" ? "user" : "Jarvis", item.content);
+                if (item.role !== "user") attachMessageActions(article, {{ includeRegenerate: false }});
+            }});
+            const jarvisArticles = messages.querySelectorAll(".message.jarvis");
+            lastAssistantArticle = jarvisArticles[jarvisArticles.length - 1] || null;
+            if (lastAssistantArticle) attachMessageActions(lastAssistantArticle, {{ includeRegenerate: true }});
             if (items.length) rememberChatTitle();
         }}
         function exportLocalMemory(event) {{
@@ -3591,16 +3621,74 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             const visible = content.replace(/\\[\\[JARVIS_IMAGE_GALLERY:[A-Za-z0-9_\\-=]+\\]\\]/g, "").trim();
             return escapeHtml(visible) + imageGalleryHtml(content);
         }}
+        let lastAssistantArticle = null;
+        let activeRequestController = null;
         function addMessage(roleName, content) {{
             if (emptyState) emptyState.remove();
             if (suggestions) suggestions.remove();
+            const isUser = roleName === "user";
             const article = document.createElement("article");
-            article.className = "message " + (roleName === "user" ? "user" : "jarvis");
-            const avatar = roleName === "user" ? "" : `<div class="avatar">J</div>`;
-            article.innerHTML = avatar + `<div class="bubble">${{renderContent(content)}}</div>`;
+            article.className = "message " + (isUser ? "user" : "jarvis");
+            article.dataset.raw = content;
+            const avatar = isUser ? "" : `<div class="avatar">J</div>`;
+            article.innerHTML = avatar + `<div class="message-body"><div class="bubble">${{renderContent(content)}}</div></div>`;
             messages.appendChild(article);
             scrollDown();
             return article;
+        }}
+        function findPrecedingUserText(article) {{
+            let node = article.previousElementSibling;
+            while (node) {{
+                if (node.classList.contains("user")) return node.dataset.raw || "";
+                node = node.previousElementSibling;
+            }}
+            return "";
+        }}
+        async function copyMessageText(article, copyBtn) {{
+            const text = article.dataset.raw || article.querySelector(".bubble")?.textContent || "";
+            try {{
+                await navigator.clipboard.writeText(text);
+                copyBtn.classList.add("copied");
+                window.setTimeout(() => copyBtn.classList.remove("copied"), 1400);
+            }} catch (error) {{}}
+        }}
+        function attachMessageActions(article, options = {{}}) {{
+            const body = article.querySelector(".message-body");
+            if (!body) return;
+            const existing = body.querySelector(".message-actions");
+            if (existing) existing.remove();
+            const actions = document.createElement("div");
+            actions.className = "message-actions";
+            const copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.className = "message-action";
+            copyBtn.title = "Copy response";
+            copyBtn.setAttribute("aria-label", "Copy response");
+            copyBtn.innerHTML = `<span data-lucide="copy"></span>`;
+            copyBtn.addEventListener("click", () => copyMessageText(article, copyBtn));
+            actions.appendChild(copyBtn);
+            if (options.includeRegenerate) {{
+                const regenBtn = document.createElement("button");
+                regenBtn.type = "button";
+                regenBtn.className = "message-action";
+                regenBtn.title = "Regenerate response";
+                regenBtn.setAttribute("aria-label", "Regenerate response");
+                regenBtn.innerHTML = `<span data-lucide="refresh-cw"></span>`;
+                regenBtn.addEventListener("click", () => regenerateResponse(article));
+                actions.appendChild(regenBtn);
+            }}
+            body.appendChild(actions);
+            if (window.lucide) lucide.createIcons();
+        }}
+        function replaceLastAssistantMemory(content, mode = activeMode) {{
+            const items = getChatMemory();
+            if (items.length && items[items.length - 1].role !== "user") {{
+                items[items.length - 1] = {{ role: "Jarvis", content, mode, time: new Date().toISOString() }};
+                saveChatMemory(items);
+                rememberChatTitle(content);
+            }} else {{
+                rememberMessage("Jarvis", content, mode);
+            }}
         }}
         function addPetMessage(roleName, content) {{
             if (!petMessages) return null;
@@ -3878,35 +3966,48 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         if (workspaceOpen) workspaceOpen.addEventListener("click", () => document.body.classList.remove("workspace-collapsed"));
         if (window.lucide) lucide.createIcons();
         hydrateSidebar();
-        async function sendMessage() {{
-            const text = input.value.trim();
-            if (!text) return;
+        function setSendBusy(isBusy) {{
+            button.disabled = isBusy;
+            button.hidden = isBusy;
+            if (stopButton) stopButton.hidden = !isBusy;
+        }}
+        async function runJarvisRequest(text, targetArticle, {{ isRegenerate = false }} = {{}}) {{
             const requestHistory = deviceMemoryEnabled ? getChatMemory().slice(-{MAX_HISTORY_MESSAGES}) : [];
             const assignmentMemory = deviceMemoryEnabled ? getAssignmentMemory() : [];
             const engineeringRun = activeMode === "engineer";
-            if (engineeringRun && !engineeringState.active) activateEngineeringProject(text);
-            else if (engineeringRun) updateEngineeringDashboard("ANALYSING");
+            if (engineeringRun && !isRegenerate) {{
+                if (!engineeringState.active) activateEngineeringProject(text);
+                else updateEngineeringDashboard("ANALYSING");
+            }}
             const startedAt = Date.now();
-            addMessage("user", text);
-            rememberMessage("user", text, activeMode);
-            input.value = "";
-            button.disabled = true;
-            const placeholder = addMessage("Jarvis", "Thinking");
-            let thinkingStep=0;
-            const thinkingTimer=window.setInterval(()=>{{thinkingStep=(thinkingStep+1)%4;placeholder.querySelector(".bubble").textContent="Thinking"+".".repeat(thinkingStep);}},350);
+            const controller = new AbortController();
+            activeRequestController = controller;
+            setSendBusy(true);
+            const bubble = targetArticle.querySelector(".bubble");
+            let thinkingStep = 0;
+            bubble.textContent = "Thinking";
+            const thinkingTimer = window.setInterval(() => {{
+                thinkingStep = (thinkingStep + 1) % 4;
+                bubble.textContent = "Thinking" + ".".repeat(thinkingStep);
+            }}, 350);
             setCoreState("ANALYSING", true);
             updateActivityDashboard("THINKING");
             try {{
                 const response = await fetch(`/api/chat/${{chatId}}`, {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory, assignment_memory: assignmentMemory }})
+                    body: JSON.stringify({{ message: text, mode: activeMode, history: requestHistory, assignment_memory: assignmentMemory }}),
+                    signal: controller.signal
                 }});
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || "Jarvis could not process that request.");
                 const answerText = data.answer || "No response.";
-                placeholder.querySelector(".bubble").innerHTML = renderContent(answerText);
-                rememberMessage("Jarvis", answerText, activeMode);
+                targetArticle.dataset.raw = answerText;
+                bubble.innerHTML = renderContent(answerText);
+                if (isRegenerate) replaceLastAssistantMemory(answerText, activeMode);
+                else rememberMessage("Jarvis", answerText, activeMode);
+                attachMessageActions(targetArticle, {{ includeRegenerate: true }});
+                lastAssistantArticle = targetArticle;
                 if (engineeringRun) {{
                     engineeringState.latestBrief = answerText;
                     saveEngineeringState();
@@ -3916,18 +4017,40 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 if(elapsedMs&&latencyReadout) latencyReadout.textContent=`${{(elapsedMs/1000).toFixed(1)}}s`;
                 recordActivityRun(elapsedMs);
             }} catch (error) {{
-                placeholder.querySelector(".bubble").textContent = error.message || "Connection error. Jarvis.AI did not respond.";
-                updateActivityDashboard("ERROR");
+                if (error?.name === "AbortError") {{
+                    bubble.textContent = "Stopped.";
+                    targetArticle.dataset.raw = "Stopped.";
+                }} else {{
+                    bubble.textContent = error.message || "Connection error. Jarvis.AI did not respond.";
+                    updateActivityDashboard("ERROR");
+                }}
             }} finally {{
                 window.clearInterval(thinkingTimer);
-                button.disabled = false;
+                activeRequestController = null;
+                setSendBusy(false);
                 setCoreState(brainReady ? "READY" : "AI OFFLINE", false);
                 window.setTimeout(() => updateActivityDashboard("IDLE"), 1600);
                 input.focus();
                 scrollDown();
             }}
         }}
+        function regenerateResponse(article) {{
+            if (activeRequestController) return;
+            const text = findPrecedingUserText(article);
+            if (!text) return;
+            runJarvisRequest(text, article, {{ isRegenerate: true }});
+        }}
+        async function sendMessage() {{
+            const text = input.value.trim();
+            if (!text || activeRequestController) return;
+            addMessage("user", text);
+            rememberMessage("user", text, activeMode);
+            input.value = "";
+            const placeholder = addMessage("Jarvis", "Thinking");
+            await runJarvisRequest(text, placeholder);
+        }}
         form.addEventListener("submit", event => {{ event.preventDefault(); sendMessage(); }});
+        if (stopButton) stopButton.addEventListener("click", () => {{ activeRequestController?.abort(); }});
         input.addEventListener("keydown", event => {{
             if (event.key === "Enter" && !event.shiftKey) {{
                 event.preventDefault();
