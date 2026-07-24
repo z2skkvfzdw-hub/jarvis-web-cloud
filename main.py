@@ -1993,6 +1993,57 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         }}
         .message.user .bubble {{ background: #2f2f2f; max-width: min(74%, 720px); }}
         .message.jarvis .bubble {{ background: transparent; }}
+        .bubble.rendered {{ white-space: normal; }}
+        .bubble.rendered p {{ margin: 0 0 10px; }}
+        .bubble.rendered p:last-child {{ margin-bottom: 0; }}
+        .bubble.rendered ul, .bubble.rendered ol {{ margin: 8px 0; padding-left: 22px; }}
+        .bubble.rendered blockquote {{
+            margin: 8px 0;
+            padding: 2px 12px;
+            border-left: 3px solid #444;
+            color: #b7b7b7;
+        }}
+        .bubble.rendered a {{ color: #7cc4ff; }}
+        .bubble.rendered code {{
+            background: #1d1d1d;
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-family: "Cascadia Code", "Consolas", monospace;
+            font-size: 0.92em;
+        }}
+        .bubble.rendered pre {{
+            position: relative;
+            margin: 10px 0;
+            padding: 14px 44px 14px 14px;
+            background: #141414;
+            border: 1px solid #2c2c2c;
+            border-radius: 10px;
+            overflow-x: auto;
+        }}
+        .bubble.rendered pre code {{ background: transparent; padding: 0; border-radius: 0; }}
+        .code-copy-button {{
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid #3a3a3a;
+            background: #1c1c1c;
+            color: #d7d7d7;
+            cursor: pointer;
+        }}
+        .code-copy-button:hover {{ border-color: #777; color: #fff; }}
+        .bubble.rendered table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 10px 0;
+            font-size: 0.94em;
+            max-width: 100%;
+            overflow-x: auto;
+        }}
+        .bubble.rendered th, .bubble.rendered td {{ border: 1px solid #333; padding: 6px 10px; text-align: left; }}
+        .bubble.rendered th {{ background: #1c1c1c; }}
         .composer {{ padding: 12px 24px 26px; background: #000; }}
         .chat-form {{
             max-width: 860px;
@@ -3399,17 +3450,28 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             const row = document.querySelector(`[data-chat-row][data-chat-id="${{chatId}}"]`);
             applyRowState(row, updated);
         }}
-        function renderLocalChatMemory() {{
+        async function renderLocalChatMemory() {{
             if (!deviceMemoryEnabled || messages.querySelector(".message")) return;
             const items = getChatMemory();
-            items.forEach(item => {{
-                const article = addMessage(item.role === "user" ? "user" : "Jarvis", item.content);
+            if (!items.length) return;
+            let htmlList = [];
+            try {{
+                const response = await fetch("/api/render-batch", {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ texts: items.map(item => item.content) }})
+                }});
+                const data = await response.json();
+                if (response.ok && Array.isArray(data.html)) htmlList = data.html;
+            }} catch (error) {{}}
+            items.forEach((item, index) => {{
+                const article = addMessage(item.role === "user" ? "user" : "Jarvis", item.content, htmlList[index]);
                 if (item.role !== "user") attachMessageActions(article, {{ includeRegenerate: false }});
             }});
             const jarvisArticles = messages.querySelectorAll(".message.jarvis");
             lastAssistantArticle = jarvisArticles[jarvisArticles.length - 1] || null;
             if (lastAssistantArticle) attachMessageActions(lastAssistantArticle, {{ includeRegenerate: true }});
-            if (items.length) rememberChatTitle();
+            rememberChatTitle();
         }}
         function exportLocalMemory(event) {{
             if (!deviceMemoryEnabled) return;
@@ -3623,7 +3685,32 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         }}
         let lastAssistantArticle = null;
         let activeRequestController = null;
-        function addMessage(roleName, content) {{
+        function enhanceCodeBlocks(bubble) {{
+            if (!bubble) return;
+            bubble.querySelectorAll("pre").forEach(pre => {{
+                if (pre.querySelector(".code-copy-button")) return;
+                const code = pre.querySelector("code") || pre;
+                const copyBtn = document.createElement("button");
+                copyBtn.type = "button";
+                copyBtn.className = "code-copy-button";
+                copyBtn.textContent = "Copy";
+                copyBtn.addEventListener("click", async () => {{
+                    try {{
+                        await navigator.clipboard.writeText(code.textContent || "");
+                        copyBtn.textContent = "Copied";
+                        window.setTimeout(() => {{ copyBtn.textContent = "Copy"; }}, 1400);
+                    }} catch (error) {{}}
+                }});
+                pre.appendChild(copyBtn);
+            }});
+        }}
+        function setBubbleHtml(bubble, htmlContent) {{
+            if (!bubble) return;
+            bubble.innerHTML = htmlContent;
+            bubble.classList.add("rendered");
+            enhanceCodeBlocks(bubble);
+        }}
+        function addMessage(roleName, content, providedHtml) {{
             if (emptyState) emptyState.remove();
             if (suggestions) suggestions.remove();
             const isUser = roleName === "user";
@@ -3631,7 +3718,10 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             article.className = "message " + (isUser ? "user" : "jarvis");
             article.dataset.raw = content;
             const avatar = isUser ? "" : `<div class="avatar">J</div>`;
-            article.innerHTML = avatar + `<div class="message-body"><div class="bubble">${{renderContent(content)}}</div></div>`;
+            article.innerHTML = avatar + `<div class="message-body"><div class="bubble"></div></div>`;
+            const bubble = article.querySelector(".bubble");
+            if (providedHtml) setBubbleHtml(bubble, providedHtml);
+            else bubble.innerHTML = renderContent(content);
             messages.appendChild(article);
             scrollDown();
             return article;
@@ -3971,7 +4061,7 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
             button.hidden = isBusy;
             if (stopButton) stopButton.hidden = !isBusy;
         }}
-        async function runJarvisRequest(text, targetArticle, {{ isRegenerate = false }} = {{}}) {{
+        async function runJarvisRequest(text, targetArticle, {{ isRegenerate = false, userArticle = null }} = {{}}) {{
             const requestHistory = deviceMemoryEnabled ? getChatMemory().slice(-{MAX_HISTORY_MESSAGES}) : [];
             const assignmentMemory = deviceMemoryEnabled ? getAssignmentMemory() : [];
             const engineeringRun = activeMode === "engineer";
@@ -4003,7 +4093,11 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
                 if (!response.ok) throw new Error(data.detail || "Jarvis could not process that request.");
                 const answerText = data.answer || "No response.";
                 targetArticle.dataset.raw = answerText;
-                bubble.innerHTML = renderContent(answerText);
+                setBubbleHtml(bubble, data.answer_html || renderContent(answerText));
+                if (userArticle) {{
+                    const userBubble = userArticle.querySelector(".bubble");
+                    if (userBubble && data.message_html) setBubbleHtml(userBubble, data.message_html);
+                }}
                 if (isRegenerate) replaceLastAssistantMemory(answerText, activeMode);
                 else rememberMessage("Jarvis", answerText, activeMode);
                 attachMessageActions(targetArticle, {{ includeRegenerate: true }});
@@ -4043,11 +4137,11 @@ def page_html(chat_id: str, device_id: str, csp_nonce: str, profile: dict[str, A
         async function sendMessage() {{
             const text = input.value.trim();
             if (!text || activeRequestController) return;
-            addMessage("user", text);
+            const userArticle = addMessage("user", text);
             rememberMessage("user", text, activeMode);
             input.value = "";
             const placeholder = addMessage("Jarvis", "Thinking");
-            await runJarvisRequest(text, placeholder);
+            await runJarvisRequest(text, placeholder, {{ userArticle }});
         }}
         form.addEventListener("submit", event => {{ event.preventDefault(); sendMessage(); }});
         if (stopButton) stopButton.addEventListener("click", () => {{ activeRequestController?.abort(); }});
@@ -5140,11 +5234,27 @@ def api_chat(chat_id: str, payload: ChatRequest, request: Request) -> JSONRespon
     return JSONResponse(
         {
             "answer": answer,
+            "answer_html": render_content(answer),
+            "message_html": render_content(text),
             "mode": payload.mode,
             "memory": "device" if DEVICE_MEMORY_ENABLED else "server",
             "elapsed_ms": round((time.perf_counter() - started) * 1000),
         }
     )
+
+
+class RenderBatchRequest(BaseModel):
+    texts: list[str] = Field(default_factory=list, max_length=200)
+
+
+@app.post("/api/render-batch")
+def api_render_batch(payload: RenderBatchRequest, request: Request) -> JSONResponse:
+    device_id = device_id_from_request(request)
+    limited = rate_limit_response(request, device_id)
+    if limited:
+        return limited
+    rendered = [render_content(clean_text(text)[:MAX_MESSAGE_CHARS]) for text in payload.texts[:200]]
+    return JSONResponse({"html": rendered})
 
 
 @app.post("/api/chat/{chat_id}/stream")
